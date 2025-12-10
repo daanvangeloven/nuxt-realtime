@@ -1,5 +1,5 @@
 {
- "name": "nuxt-realtime",
+  "name": "nuxt-realtime",
   "version": "0.0.1",
   "description": "WebSocket integration for Nuxt 3",
   "repository": {
@@ -8,16 +8,14 @@
   },
   "license": "MIT",
   "type": "module",
-   "authors": [
+  "authors": [
     {
       "name": "Jordan van Wijnen",
       "url": "https://github.com/milkyontheblock/"
-       
     },
     {
       "name": "Daan van Geloven",
       "url": "https://github.com/daanvangeloven/"
-
     }
   ],
   "exports": {
@@ -46,12 +44,18 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest watch",
-    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit"
+    "test:types": "vue-tsc --noEmit && cd playground && vue-tsc --noEmit",
+    "prepare": "husky"
   },
   "dependencies": {
-    "@nuxt/kit": "^4.2.1"
+    "@nuxt/kit": "^4.2.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "unstorage": "^1.17.3"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.2.0",
+    "@commitlint/config-conventional": "^20.2.0",
     "@nuxt/devtools": "^3.1.1",
     "@nuxt/eslint-config": "^1.11.0",
     "@nuxt/module-builder": "^1.0.2",
@@ -60,6 +64,8 @@
     "@types/node": "latest",
     "changelogen": "^0.6.2",
     "eslint": "^9.39.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "nuxt": "^4.2.1",
     "typescript": "~5.9.3",
     "vitest": "^4.0.15",
