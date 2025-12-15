@@ -20,9 +20,27 @@ export default defineNitroPlugin((nitroApp) => {
       callback(value)
     })
 
-    socket.on('storage:set', async ({ key, value }) => {
-      await storage.setItem(key, value)
-      socket.broadcast.emit('storage:updated', { key, value })
+    socket.on('storage:set', async ({ key, value }, callback) => {
+      try {
+        await storage.setItem(key, value)
+        socket.broadcast.emit('storage:updated', { key, value })
+
+        if (callback) {
+          callback({
+            success: true,
+            status: 'ok',
+          })
+        }
+      }
+      catch (error) {
+        console.error('Storage set error:', error)
+        if (callback) {
+          callback({
+            success: false,
+            error: 'Error while updating storage value',
+          })
+        }
+      }
     })
 
     socket.on('storage:subscribe', (key: string) => {

@@ -1,5 +1,7 @@
 <script setup>
-const counter = useRealtimeStorage('counter', 0)
+const counter = useRealtimeState('counter', 0, {
+  optimisticUpdates: true,
+})
 </script>
 
 <template>
