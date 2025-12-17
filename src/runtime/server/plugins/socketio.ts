@@ -23,7 +23,7 @@ export default defineNitroPlugin((nitroApp) => {
     socket.on('storage:set', async ({ key, value }, callback) => {
       try {
         await storage.setItem(key, value)
-        socket.broadcast.emit('storage:updated', { key, value })
+        socket.to(`key:${key}`).emit('storage:updated', { key, value })
 
         if (callback) {
           callback({
