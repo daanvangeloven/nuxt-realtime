@@ -1,4 +1,4 @@
-import { ref, computed, onUnmounted, readonly, type ComputedRef, type Ref } from 'vue'
+import { ref, computed, onUnmounted, readonly, type Ref, type WritableComputedRef } from 'vue'
 import { useNuxtApp } from '#app'
 
 export interface useRealtimeStateOptions {
@@ -17,11 +17,7 @@ export interface useRealtimeStateOptions {
   updateTimeout?: number
 }
 
-export interface UseRealtimeStateReturn<T> {
-  /**
-   * The reactive state value
-   */
-  value: ComputedRef<T>
+export interface UseRealtimeStateReturn<T> extends WritableComputedRef<T> {
   /**
    * Loading state - true while fetching initial value
    */
@@ -122,9 +118,11 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
     $realtimeSocket.off('storage:updated', handleUpdate)
   })
 
-  return {
-    value,
+  // Attach loading and refresh as properties on the ref
+  Object.assign(value, {
     loading: readonly(loading),
     refresh,
-  }
+  })
+
+  return value as UseRealtimeStateReturn<T>
 }
