@@ -1,19 +1,43 @@
-import { defineNuxtModule, addPlugin, createResolver } from '@nuxt/kit'
+import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir } from '@nuxt/kit'
 
-// Module options TypeScript interface definition
-export interface ModuleOptions {}
+export interface ModuleOptions {
+  storage: {
+    driver?: 'redis' | 'fs' | 'memory' | string
+    options?: Record<string, unknown>
+  }
+  socketio: {
+    serverUrl?: string
+    path?: string
+  }
+}
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
-    name: 'my-module',
-    configKey: 'myModule',
+    name: 'nuxt-realtime',
+    configKey: 'nuxtRealtime',
   },
-  // Default configuration options of the Nuxt module
-  defaults: {},
-  setup(_options, _nuxt) {
+  defaults: {
+    storage: {
+      driver: 'memory',
+    },
+  },
+  setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
 
-    // Do not add the extension since the `.ts` will be transpiled to `.mjs` after `npm run prepack`
+    // TODO: implement storage driver options
+    // TODO: add warning if no ws server url is provided and nitro websockets aren't enabled
+    nuxt.options.runtimeConfig.public.nuxtRealtime = {
+      socketUrl: options.socketio?.serverUrl, // undefined = same origin
+      socketPath: options.socketio?.path,
+    }
+
+    // Add server plugin for socket.io initialization
+    addServerPlugin(resolver.resolve('./runtime/server/plugins/socketio'))
+
+    // Add client plugin
     addPlugin(resolver.resolve('./runtime/plugin'))
+
+    // Add composables for auto-import
+    addImportsDir(resolver.resolve('./runtime/composables'))
   },
 })

@@ -1,5 +1,13 @@
 export default defineNuxtConfig({
   modules: ['../src/module'],
-  myModule: {},
-  devtools: { enabled: true },
+  nitro: {
+    experimental: {
+      websocket: true,
+    },
+  },
+  nuxtRealtime: {
+    storage: {
+      driver: 'memory',
+    },
+  },
 })
