@@ -5,18 +5,21 @@
 [![License][license-src]][license-href]
 [![Nuxt][nuxt-src]][nuxt-href]
 
-My new Nuxt module for doing amazing things.
+Real-time state synchronization for Nuxt applications using Socket.IO.
 
-- [✨ &nbsp;Release Notes](/CHANGELOG.md)
+> **⚠️ Early Development Warning**
+> This module is currently in early development and is **not ready for production use**. APIs may change without notice, and features may be incomplete or unstable.
+
+<!-- - [✨ &nbsp;Release Notes](/CHANGELOG.md) -->
 <!-- - [🏀 Online playground](https://stackblitz.com/github/your-org/nuxt-realtime?file=playground%2Fapp.vue) -->
 <!-- - [📖 &nbsp;Documentation](https://example.com) -->
 
 ## Features
 
-<!-- Highlight some of the features your module provide here -->
-- ⛰ &nbsp;Foo
-- 🚠 &nbsp;Bar
-- 🌲 &nbsp;Baz
+- 🔄 &nbsp;Real-time state synchronization across clients
+- 🎯 &nbsp;Channel-based subscriptions for granular updates
+- 🔌 &nbsp;Built on Socket.IO for reliable WebSocket connections
+- 🎨 &nbsp;Simple composable API for Nuxt 3
 
 ## Quick Setup
 
@@ -26,34 +29,120 @@ Install the module to your Nuxt application with one command:
 npx nuxi module add nuxt-realtime
 ```
 
-That's it! You can now use Nuxt Realtime in your Nuxt app ✨
+## Implementation Guide
 
+### Basic Usage
+
+1. **Configure the module** in your `nuxt.config.ts`:
+
+```typescript
+export default defineNuxtConfig({
+  modules: ['nuxt-realtime'],
+  realtime: {
+    // Configuration options will be added here
+  }
+})
+```
+
+2. **Use the composable** in your components:
+
+```vue
+<script setup>
+// Works just like useState
+const data = useRealtimeState('my-key', {
+  count: 0,
+  message: 'Hello'
+})
+
+// Update state (automatically broadcast to all connected clients)
+data.value.count++
+data.value.message = 'Updated!'
+</script>
+
+<template>
+  <div>
+    <p>Count: {{ data.count }}</p>
+    <p>Message: {{ data.message }}</p>
+    <button @click="data.count++">Increment</button>
+  </div>
+</template>
+```
+
+### Key Concepts
+
+- **Simple API**: Works just like Vue's `useState`
+- **Automatic Sync**: The plugin handles all subscription and broadcasting automatically
+- **Keyed State**: Each key maintains its own isolated state
+- **Reactivity**: State is reactive and works seamlessly with Vue's reactivity system
 
 ## Contribution
 
+We welcome contributions! Please follow these guidelines when contributing to the project.
+
+### Commit Message Format
+
+This project follows the [Conventional Commits](https://www.conventionalcommits.org/) specification. All commit messages should be structured as follows:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+#### Types
+
+- **feat**: A new feature
+- **fix**: A bug fix
+- **docs**: Documentation only changes
+- **style**: Changes that do not affect the meaning of the code (white-space, formatting, etc)
+- **refactor**: A code change that neither fixes a bug nor adds a feature
+- **perf**: A code change that improves performance
+- **test**: Adding missing tests or correcting existing tests
+- **chore**: Changes to the build process or auxiliary tools and libraries
+
+#### Scopes
+
+- **core**: Core functionality
+- **types**: TypeScript type definitions
+- **docs**: Documentation
+- **deps**: Dependencies
+
+#### Examples
+
+```bash
+feat(core): add support for custom socket.io configuration
+fix(realtime): resolve subscription memory leak on unmount
+docs(readme): update implementation guide with examples
+chore(deps): upgrade socket.io to v4.6.0
+```
+
+### Development Workflow
+
 <details>
   <summary>Local development</summary>
-  
+
   ```bash
   # Install dependencies
   npm install
-  
+
   # Generate type stubs
   npm run dev:prepare
-  
+
   # Develop with the playground
   npm run dev
-  
+
   # Build the playground
   npm run dev:build
-  
+
   # Run ESLint
   npm run lint
-  
+
   # Run Vitest
   npm run test
   npm run test:watch
-  
+
   # Release new version
   npm run release
   ```
