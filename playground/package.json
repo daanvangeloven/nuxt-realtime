@@ -8,6 +8,8 @@
     "generate": "nuxi generate"
   },
   "dependencies": {
-    "nuxt": "^4.2.1"
+    "@nuxt/ui": "^4.4.0",
+    "nuxt": "^4.2.1",
+    "tailwindcss": "^4.1.18"
   }
 }

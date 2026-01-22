@@ -1,5 +1,6 @@
 export default defineNuxtConfig({
-  modules: ['../src/module'],
+  modules: ['../src/module', '@nuxt/ui'],
+  css: ['~/assets/main.css'],
   nitro: {
     experimental: {
       websocket: true,
