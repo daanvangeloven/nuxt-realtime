@@ -1,4 +1,4 @@
-import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir } from '@nuxt/kit'
+import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 
 export interface ModuleOptions {
   storage: {
@@ -23,6 +23,8 @@ export default defineNuxtModule<ModuleOptions>({
   },
   setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
+
+    logger.warn('nuxt-realtime is in early development. APIs may change without notice.')
 
     // TODO: implement storage driver options
     // TODO: add warning if no ws server url is provided and nitro websockets aren't enabled
