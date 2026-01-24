@@ -44,8 +44,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Playground prepare
-        run: pnpm run dev:prepare
+      - name: Build module
+        run: pnpm nuxt-module-build build --stub && pnpm nuxt-module-build prepare
 
       - name: Test
         run: pnpm run test
