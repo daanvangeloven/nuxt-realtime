@@ -15,17 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v6
         with:
           node-version: 20
-
-      - run: npm i -g --force corepack@latest && corepack enable
+          cache: pnpm
 
       - name: Install dependencies
-        run: npx nypm@latest i
+        run: pnpm install
 
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
 
   test:
     runs-on: ubuntu-latest
@@ -33,17 +34,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v6
         with:
           node-version: 20
-
-      - run: npm i -g --force corepack@latest && corepack enable
+          cache: pnpm
 
       - name: Install dependencies
-        run: npx nypm@latest i
+        run: pnpm install
 
-      - name: Playground prepare
-        run: npm run dev:prepare
+      - name: Build module
+        run: pnpm nuxt-module-build build --stub && pnpm nuxt-module-build prepare
 
       - name: Test
-        run: npm run test
+        run: pnpm run test
