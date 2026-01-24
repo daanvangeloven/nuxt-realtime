@@ -1,5 +1,5 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
-import { io } from 'socket.io-client'
+import { io, type Socket } from 'socket.io-client'
 
 export default defineNuxtPlugin(() => {
   const config = useRuntimeConfig()
@@ -16,7 +16,7 @@ export default defineNuxtPlugin(() => {
 
   return {
     provide: {
-      realtimeSocket: socket,
+      realtimeSocket: socket as Socket,
     },
   }
 })
