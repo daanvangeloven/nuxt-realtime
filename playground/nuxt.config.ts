@@ -1,5 +1,5 @@
 export default defineNuxtConfig({
-  modules: ['../src/module', '@nuxt/ui'],
+  modules: ['nuxt-realtime', '@nuxt/ui'],
   css: ['~/assets/main.css'],
   nitro: {
     experimental: {
