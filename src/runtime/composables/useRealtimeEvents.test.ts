@@ -3,7 +3,7 @@ import { Server } from 'socket.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { useRealtimeEvents } from '../../src/runtime/composables/useRealtimeEvents'
+import { useRealtimeEvents } from './useRealtimeEvents'
 
 // Mock Nuxt app
 let clientSocket: ClientSocket

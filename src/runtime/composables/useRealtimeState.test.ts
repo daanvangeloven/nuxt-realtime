@@ -4,7 +4,7 @@ import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createStorage } from 'unstorage'
-import { useRealtimeState } from '../../src/runtime/composables/useRealtimeState'
+import { useRealtimeState } from './useRealtimeState'
 
 // Mock Nuxt app
 let clientSocket: ClientSocket

@@ -1,0 +1,10 @@
+packages:
+  - playground
+  - docs
+
+ignoredBuiltDependencies:
+  - sharp
+  - vue-demi
+
+onlyBuiltDependencies:
+  - better-sqlite3

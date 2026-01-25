@@ -1,0 +1,34 @@
+{
+  "name": "nuxt-realtime-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint .",
+    "typecheck": "nuxt typecheck"
+  },
+  "dependencies": {
+    "nuxt-realtime": "workspace:*",
+    "@iconify-json/lucide": "^1.2.86",
+    "@iconify-json/simple-icons": "^1.2.67",
+    "@iconify-json/vscode-icons": "^1.2.40",
+    "@nuxt/content": "^3.11.0",
+    "@nuxt/image": "^2.0.0",
+    "@nuxt/ui": "^4.4.0",
+    "@nuxtjs/mdc": "^0.20.0",
+    "@vueuse/core": "^14.1.0",
+    "better-sqlite3": "^12.6.2",
+    "nuxt": "^4.2.2",
+    "nuxt-og-image": "^5.1.13",
+    "tailwindcss": "^4.1.18"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.12.1",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.2.2"
+  }
+}
