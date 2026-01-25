@@ -5,20 +5,24 @@ const counter = useRealtimeState('counter', 0, {
 </script>
 
 <template>
-  <div class="p-4">
-    <ConnectionStatus />
-    <div class="w-30 border my-4 px-10 py-5 flex gap-4 items-center">
-      <h1 class="text-lg">
-        Counter: <span class="font-bold">{{ counter }}</span>
-      </h1>
-      <button
-        class="border px-4 py-2"
-        @click="counter++"
-      >
-        +
-      </button>
-    </div>
+  <UApp>
+    <div class="p-4">
+      <ConnectionStatus />
+      <div class="w-30 border my-4 px-10 py-5 flex gap-4 items-center">
+        <h1 class="text-lg">
+          Counter: <span class="font-bold">{{ counter }}</span>
+        </h1>
+        <button
+          class="border px-4 py-2"
+          @click="counter++"
+        >
+          +
+        </button>
+      </div>
 
-    <Chatfeed />
-  </div>
+      <EventsDemo class="my-4" />
+
+      <Chatfeed />
+    </div>
+  </UApp>
 </template>

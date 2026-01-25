@@ -50,6 +50,40 @@ export default defineNitroPlugin((nitroApp) => {
     socket.on('storage:unsubscribe', (key: string) => {
       socket.leave(`key:${key}`)
     })
+
+    // Event pub/sub operations
+    socket.on('event:subscribe', (channel: string) => {
+      socket.join(`event:${channel}`)
+    })
+
+    socket.on('event:unsubscribe', (channel: string) => {
+      socket.leave(`event:${channel}`)
+    })
+
+    socket.on('event:publish', ({ channel, data, includeSelf }, callback) => {
+      try {
+        const room = `event:${channel}`
+
+        if (includeSelf) {
+          // Broadcast to all in room including sender
+          io.to(room).emit('event:received', { channel, data })
+        }
+        else {
+          // Broadcast to all in room except sender
+          socket.to(room).emit('event:received', { channel, data })
+        }
+
+        if (callback) {
+          callback({ success: true })
+        }
+      }
+      catch (error) {
+        console.error('Event publish error:', error)
+        if (callback) {
+          callback({ success: false, error: 'Error while publishing event' })
+        }
+      }
+    })
   })
 
   nitroApp.router.use('/socket.io/', defineEventHandler({
