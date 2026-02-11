@@ -1,5 +1,5 @@
 import { onUnmounted } from 'vue'
-import { useNuxtApp } from '#imports'
+import { useNuxtApp } from '#app'
 import type { EventPublishResponse } from '../types'
 
 export interface UseRealtimeEventsSubscribeOptions {

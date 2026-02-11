@@ -1,6 +1,6 @@
 import { ref, computed, onUnmounted, readonly, type Ref, type WritableComputedRef } from 'vue'
 import type { StorageSetResponse, StorageUpdatePayload } from '../types'
-import { useNuxtApp } from '#imports'
+import { useNuxtApp } from '#app'
 
 export interface useRealtimeStateOptions {
   /**
