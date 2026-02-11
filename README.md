@@ -79,6 +79,11 @@ data.value.message = 'Updated!'
 
 We welcome contributions! Please follow these guidelines when contributing to the project.
 
+
+<details>
+  <summary>Contribution guidelines</summary>
+
+
 ### Commit Message Format
 
 This project follows the [Conventional Commits](https://www.conventionalcommits.org/) specification. All commit messages should be structured as follows:
@@ -117,36 +122,6 @@ fix(realtime): resolve subscription memory leak on unmount
 docs(readme): update implementation guide with examples
 chore(deps): upgrade socket.io to v4.6.0
 ```
-
-### Development Workflow
-
-<details>
-  <summary>Local development</summary>
-
-  ```bash
-  # Install dependencies
-  npm install
-
-  # Generate type stubs
-  npm run dev:prepare
-
-  # Develop with the playground
-  npm run dev
-
-  # Build the playground
-  npm run dev:build
-
-  # Run ESLint
-  npm run lint
-
-  # Run Vitest
-  npm run test
-  npm run test:watch
-
-  # Release new version
-  npm run release
-  ```
-
 </details>
 
 
