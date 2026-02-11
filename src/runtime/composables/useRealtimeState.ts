@@ -1,5 +1,6 @@
 import { ref, computed, onUnmounted, readonly, type Ref, type WritableComputedRef } from 'vue'
-import { useNuxtApp } from '#app'
+import type { StorageSetResponse, StorageUpdatePayload } from '../types'
+import { useNuxtApp } from '#imports'
 
 export interface useRealtimeStateOptions {
   /**
@@ -32,7 +33,7 @@ export function useRealtimeState<T>(key: string, options?: useRealtimeStateOptio
 export function useRealtimeState<T>(key: string, defaultValue: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T>
 
 export function useRealtimeState<T>(key: string, defaultValue?: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T> {
-  const { $realtimeSocket } = useNuxtApp()
+  const socket = useNuxtApp().$realtimeSocket
   const _value = ref<T>(defaultValue as T)
   const loading = ref(true)
 
@@ -51,11 +52,10 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
         _value.value = newValue
       }
 
-      $realtimeSocket
+      socket
         .timeout(updateTimeout)
         .emit('storage:set', { key, value: newValue },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (err: any, response: any) => {
+          (err: Error, response: StorageSetResponse) => {
             // Revert on timeout or server error
             if (err || !response?.success) {
               console.error('Failed to update storage:', err || response?.error)
@@ -66,47 +66,43 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   })
 
   // Update handler
-  // TODO: fix typing
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleUpdate = ({ key: updatedKey, value: newValue }: any) => {
+  const handleUpdate = ({ key: updatedKey, value: newValue }: StorageUpdatePayload) => {
     if (updatedKey === key) {
       // Update internal value directly to prevent setter loop
-      _value.value = newValue
+      _value.value = newValue as T
     }
   }
 
   // Fetch initial value and subscribe to updates
-  $realtimeSocket
+  socket
     .timeout(updateTimeout)
     .emit('storage:get', key,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (err: any, serverValue?: T) => {
+      (err: Error, serverValue: unknown) => {
         if (err) {
           console.error('Failed to fetch initial storage value:', err)
         }
         else if (serverValue !== null && serverValue !== undefined) {
-          _value.value = serverValue
+          _value.value = serverValue as T
         }
         loading.value = false
 
         // Subscribe and listen
-        $realtimeSocket.emit('storage:subscribe', key)
-        $realtimeSocket.on('storage:updated', handleUpdate)
+        socket.emit('storage:subscribe', key)
+        socket.on('storage:updated', handleUpdate)
       })
 
   // Refresh function to manually fetch latest value from server
   const refresh = () => {
     loading.value = true
-    $realtimeSocket
+    socket
       .timeout(updateTimeout)
       .emit('storage:get', key,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (err: any, serverValue?: T) => {
+        (err: Error, serverValue: unknown) => {
           if (err) {
             console.error('Failed to fetch storage value:', err)
           }
           else if (serverValue !== null && serverValue !== undefined) {
-            _value.value = serverValue
+            _value.value = serverValue as T
           }
           loading.value = false
         })
@@ -114,8 +110,8 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
 
   // Cleanup
   onUnmounted(() => {
-    $realtimeSocket.emit('storage:unsubscribe', key)
-    $realtimeSocket.off('storage:updated', handleUpdate)
+    socket.emit('storage:unsubscribe', key)
+    socket.off('storage:updated', handleUpdate)
   })
 
   // Attach loading and refresh as properties on the ref

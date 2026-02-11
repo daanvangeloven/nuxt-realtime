@@ -1,4 +1,4 @@
-import { useNuxtApp } from '#app'
+import { useNuxtApp } from '#imports'
 import type { Socket } from 'socket.io-client'
 import { onUnmounted, ref, type Ref } from 'vue'
 
