@@ -5,6 +5,7 @@ export default defineNuxtConfig({
     '@nuxt/image',
     '@nuxt/ui',
     '@nuxt/content',
+    '@barzhsieh/nuxt-content-mermaid',
     'nuxt-og-image',
   ],
 
@@ -37,6 +38,12 @@ export default defineNuxtConfig({
       ],
       crawlLinks: true,
       autoSubfolderIndex: false,
+    },
+  },
+
+  vite: {
+    optimizeDeps: {
+      include: ['dayjs'],
     },
   },
 
