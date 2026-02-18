@@ -1,9 +1,8 @@
 import type { Duplex } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { defineNitroPlugin } from 'nitropack/runtime'
+import { defineNitroPlugin, useStorage } from 'nitropack/runtime'
 import { Server as Engine } from 'engine.io'
 import { Server } from 'socket.io'
-import { createStorage } from 'unstorage'
 import { defineEventHandler } from 'h3'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
@@ -28,7 +27,7 @@ interface EngineWithInternals {
 export default defineNitroPlugin((nitroApp) => {
   const io = new Server()
   const engine = new Engine()
-  const storage = createStorage()
+  const storage = useStorage('nuxt-realtime')
 
   io.bind(engine)
 
