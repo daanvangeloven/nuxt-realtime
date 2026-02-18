@@ -1,11 +1,12 @@
-import { defineNuxtPlugin, useRuntimeConfig } from '#app'
-import { io, type Socket } from 'socket.io-client'
+import { defineNuxtPlugin, useRuntimeConfig } from '#imports'
+import { io } from 'socket.io-client'
+import type { RealtimeSocket } from './types'
 
 export default defineNuxtPlugin(() => {
   const config = useRuntimeConfig()
 
   // Defaults to window.location.host if no socket url is provided
-  const socket = io(config.public.nuxtRealtime.socketUrl, {
+  const socket: RealtimeSocket = io(config.public.nuxtRealtime.socketUrl, {
     path: config.public.nuxtRealtime.socketPath || '/socket.io',
     autoConnect: true,
   })
@@ -16,7 +17,7 @@ export default defineNuxtPlugin(() => {
 
   return {
     provide: {
-      realtimeSocket: socket as Socket,
+      realtimeSocket: socket,
     },
   }
 })

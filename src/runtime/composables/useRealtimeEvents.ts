@@ -1,5 +1,6 @@
 import { onUnmounted } from 'vue'
 import { useNuxtApp } from '#app'
+import type { EventPublishResponse } from '../types'
 
 export interface UseRealtimeEventsSubscribeOptions {
   /**
@@ -129,8 +130,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
         .emit(
           'event:publish',
           { channel, data, includeSelf },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (err: any, response: any) => {
+          (err: Error, response: EventPublishResponse) => {
             if (err) {
               reject(new Error(`Publish timeout: ${err}`))
             }

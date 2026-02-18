@@ -1,8 +1,29 @@
+import type { Duplex } from 'node:stream'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineNitroPlugin } from 'nitropack/runtime'
 import { Server as Engine } from 'engine.io'
 import { Server } from 'socket.io'
 import { createStorage } from 'unstorage'
 import { defineEventHandler } from 'h3'
+
+// Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
+// but Engine.IO requires them. These interfaces document the internal properties we rely on.
+interface NodeEvent {
+  node: { req: IncomingMessage, res: ServerResponse }
+  _handled: boolean
+}
+
+interface WebSocketPeer {
+  _internal: { nodeReq: IncomingMessage & { socket: Duplex } }
+  websocket: WebSocket
+}
+
+// Engine.IO's prepare() and onWebSocket() are private in its type definitions,
+// but are needed to bridge Nitro's WebSocket handling with Engine.IO.
+interface EngineWithInternals {
+  prepare: (req: IncomingMessage) => void
+  onWebSocket: (req: IncomingMessage, socket: Duplex, websocket: WebSocket) => void
+}
 
 export default defineNitroPlugin((nitroApp) => {
   const io = new Server()
@@ -86,19 +107,21 @@ export default defineNitroPlugin((nitroApp) => {
     })
   })
 
+  const engineWithInternals = engine as unknown as EngineWithInternals
+  // There currently is no better way to use socket.io with crossws
+  // https://socket.io/how-to/use-with-nuxt#hook-the-socketio-server
+  // https://github.com/h3js/crossws/issues/138
   nitroApp.router.use('/socket.io/', defineEventHandler({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    handler(event: any) {
-      engine.handleRequest(event.node.req, event.node.res)
-      event._handled = true
+    handler(event) {
+      const nodeEvent = event as unknown as NodeEvent
+      engine.handleRequest(nodeEvent.node.req as Parameters<Engine['handleRequest']>[0], nodeEvent.node.res)
+      nodeEvent._handled = true
     },
     websocket: {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      open(peer: any) {
-        // @ts-expect-error private method and property
-        engine.prepare(peer._internal.nodeReq)
-        // @ts-expect-error private method and property
-        engine.onWebSocket(peer._internal.nodeReq, peer._internal.nodeReq.socket, peer.websocket)
+      open(peer) {
+        const { _internal, websocket } = peer as unknown as WebSocketPeer
+        engineWithInternals.prepare(_internal.nodeReq)
+        engineWithInternals.onWebSocket(_internal.nodeReq, _internal.nodeReq.socket, websocket)
       },
     },
   }))
