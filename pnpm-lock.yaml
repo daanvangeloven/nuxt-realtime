@@ -17,9 +17,6 @@ importers:
       socket.io-client:
         specifier: ^4.8.1
         version: 4.8.1
-      unstorage:
-        specifier: ^1.17.3
-        version: 1.17.3(db0@0.3.4(better-sqlite3@12.6.2))(ioredis@5.8.2)
     devDependencies:
       '@commitlint/cli':
         specifier: ^20.2.0
