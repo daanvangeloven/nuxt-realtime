@@ -131,7 +131,7 @@ Simple, Powerful Composables
   Pluggable Storage
 
   #description
-  Use memory, Redis, or any unstorage driver for state persistence. Scale horizontally with shared storage backends.
+  Use memory, Redis, or any Nitro-supported storage driver for state persistence. Scale horizontally with shared storage backends.
   :::
 ::
 
