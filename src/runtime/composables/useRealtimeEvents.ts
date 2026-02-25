@@ -58,7 +58,7 @@ export interface UseRealtimeEventsReturn {
 }
 
 export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRealtimeEventsReturn {
-  const { $realtimeSocket } = useNuxtApp()
+  const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
 
   const { publishTimeout = 5000 } = options
 
@@ -74,13 +74,17 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
     }
   }
 
-  $realtimeSocket.on('event:received', handleEventReceived)
+  if (socket) {
+    socket.on('event:received', handleEventReceived)
+  }
 
   const subscribe = <T = unknown>(
     channel: string,
     callback: (data: T) => void,
     subscribeOptions: UseRealtimeEventsSubscribeOptions = {},
   ): (() => void) => {
+    if (!socket) return () => {}
+
     const { includeSelf = false } = subscribeOptions
 
     // Get or create channel subscriptions map
@@ -99,7 +103,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
 
     // Join the room if this is the first subscription to this channel
     if (isFirstSubscription) {
-      $realtimeSocket.emit('event:subscribe', channel)
+      socket.emit('event:subscribe', channel)
     }
 
     // Return unsubscribe function
@@ -111,7 +115,7 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
         // If no more subscriptions for this channel, leave the room
         if (subs.size === 0) {
           subscriptions.delete(channel)
-          $realtimeSocket.emit('event:unsubscribe', channel)
+          socket.emit('event:unsubscribe', channel)
         }
       }
     }
@@ -122,10 +126,12 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
     data: T,
     publishOptions: UseRealtimeEventsSubscribeOptions = {},
   ): Promise<void> => {
+    if (!socket) return Promise.resolve()
+
     const { includeSelf = false } = publishOptions
 
     return new Promise((resolve, reject) => {
-      $realtimeSocket
+      socket
         .timeout(publishTimeout)
         .emit(
           'event:publish',
@@ -146,21 +152,24 @@ export function useRealtimeEvents(options: UseRealtimeEventsOptions = {}): UseRe
   }
 
   const unsubscribe = (channel: string): void => {
+    if (!socket) return
     const channelSubs = subscriptions.get(channel)
     if (channelSubs) {
       subscriptions.delete(channel)
-      $realtimeSocket.emit('event:unsubscribe', channel)
+      socket.emit('event:unsubscribe', channel)
     }
   }
 
   // Cleanup on unmount
   onUnmounted(() => {
+    if (!socket) return
+
     // Remove the global event listener
-    $realtimeSocket.off('event:received', handleEventReceived)
+    socket.off('event:received', handleEventReceived)
 
     // Unsubscribe from all channels
     for (const channel of subscriptions.keys()) {
-      $realtimeSocket.emit('event:unsubscribe', channel)
+      socket.emit('event:unsubscribe', channel)
     }
     subscriptions.clear()
   })

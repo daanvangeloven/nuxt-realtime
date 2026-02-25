@@ -42,7 +42,7 @@ export default defineNuxtModule<ModuleOptions>({
     addServerPlugin(resolver.resolve('./runtime/server/plugins/socketio'))
 
     // Add client plugin
-    addPlugin(resolver.resolve('./runtime/plugin'))
+    addPlugin(resolver.resolve('./runtime/plugin.client'))
 
     // Add composables for auto-import
     addImportsDir(resolver.resolve('./runtime/composables'))
