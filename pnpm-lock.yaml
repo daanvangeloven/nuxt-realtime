@@ -17,9 +17,6 @@ importers:
       socket.io-client:
         specifier: ^4.8.1
         version: 4.8.1
-      unstorage:
-        specifier: ^1.17.3
-        version: 1.17.3(db0@0.3.4(better-sqlite3@12.6.2))(ioredis@5.8.2)
     devDependencies:
       '@commitlint/cli':
         specifier: ^20.2.0
@@ -8865,7 +8862,7 @@ snapshots:
       '@iconify/utils': 3.1.0
       '@iconify/vue': 5.0.0(vue@3.5.25(typescript@5.9.3))
       '@nuxt/devtools-kit': 3.1.1(magicast@0.5.1)(vite@7.2.7(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.44.1)(yaml@2.8.2))
-      '@nuxt/kit': 4.2.2(magicast@0.5.1)
+      '@nuxt/kit': 4.3.0(magicast@0.5.1)
       consola: 3.4.2
       local-pkg: 1.1.2
       mlly: 1.8.0

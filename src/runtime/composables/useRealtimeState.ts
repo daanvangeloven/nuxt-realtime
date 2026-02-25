@@ -33,9 +33,9 @@ export function useRealtimeState<T>(key: string, options?: useRealtimeStateOptio
 export function useRealtimeState<T>(key: string, defaultValue: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T>
 
 export function useRealtimeState<T>(key: string, defaultValue?: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T> {
-  const socket = useNuxtApp().$realtimeSocket
+  const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
   const _value = ref<T>(defaultValue as T)
-  const loading = ref(true)
+  const loading = ref(import.meta.client)
 
   const {
     optimisticUpdates = true,
@@ -45,6 +45,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   const value = computed({
     get: () => _value.value,
     set: (newValue: T) => {
+      if (!socket) return
       const oldValue = _value.value
 
       // Optimistically update the value
@@ -74,25 +75,28 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   }
 
   // Fetch initial value and subscribe to updates
-  socket
-    .timeout(updateTimeout)
-    .emit('storage:get', key,
-      (err: Error, serverValue: unknown) => {
-        if (err) {
-          console.error('Failed to fetch initial storage value:', err)
-        }
-        else if (serverValue !== null && serverValue !== undefined) {
-          _value.value = serverValue as T
-        }
-        loading.value = false
+  if (socket) {
+    socket
+      .timeout(updateTimeout)
+      .emit('storage:get', key,
+        (err: Error, serverValue: unknown) => {
+          if (err) {
+            console.error('Failed to fetch initial storage value:', err)
+          }
+          else if (serverValue !== null && serverValue !== undefined) {
+            _value.value = serverValue as T
+          }
+          loading.value = false
 
-        // Subscribe and listen
-        socket.emit('storage:subscribe', key)
-        socket.on('storage:updated', handleUpdate)
-      })
+          // Subscribe and listen
+          socket.emit('storage:subscribe', key)
+          socket.on('storage:updated', handleUpdate)
+        })
+  }
 
   // Refresh function to manually fetch latest value from server
   const refresh = () => {
+    if (!socket) return
     loading.value = true
     socket
       .timeout(updateTimeout)
@@ -110,6 +114,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
 
   // Cleanup
   onUnmounted(() => {
+    if (!socket) return
     socket.emit('storage:unsubscribe', key)
     socket.off('storage:updated', handleUpdate)
   })

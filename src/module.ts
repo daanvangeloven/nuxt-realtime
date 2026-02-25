@@ -1,11 +1,9 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
+import type { StorageMounts } from 'nitropack'
 
 export interface ModuleOptions {
-  storage: {
-    driver?: 'redis' | 'fs' | 'memory' | string
-    options?: Record<string, unknown>
-  }
-  socketio: {
+  storage?: StorageMounts[string]
+  socketio?: {
     serverUrl?: string
     path?: string
   }
@@ -26,7 +24,14 @@ export default defineNuxtModule<ModuleOptions>({
 
     logger.warn('nuxt-realtime is in early development. APIs may change without notice.')
 
-    // TODO: implement storage driver options
+    nuxt.hook('nitro:config', (nitroConfig) => {
+      nitroConfig.storage ??= {}
+      nitroConfig.storage['nuxt-realtime'] = {
+        driver: 'memory',
+        ...options.storage,
+      }
+    })
+
     // TODO: add warning if no ws server url is provided and nitro websockets aren't enabled
     nuxt.options.runtimeConfig.public.nuxtRealtime = {
       socketUrl: options.socketio?.serverUrl, // undefined = same origin
@@ -37,7 +42,7 @@ export default defineNuxtModule<ModuleOptions>({
     addServerPlugin(resolver.resolve('./runtime/server/plugins/socketio'))
 
     // Add client plugin
-    addPlugin(resolver.resolve('./runtime/plugin'))
+    addPlugin(resolver.resolve('./runtime/plugin.client'))
 
     // Add composables for auto-import
     addImportsDir(resolver.resolve('./runtime/composables'))

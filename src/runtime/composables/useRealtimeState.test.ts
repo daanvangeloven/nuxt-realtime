@@ -3,7 +3,6 @@ import { Server } from 'socket.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createStorage } from 'unstorage'
 import { useRealtimeState } from './useRealtimeState'
 
 // Mock Nuxt app
@@ -32,18 +31,18 @@ describe('useRealtimeState - Integration', () => {
     // Create HTTP server and Socket.IO server
     httpServer = createServer()
     io = new Server(httpServer)
-    const storage = createStorage()
+    const storage = new Map<string, unknown>()
 
     // Set up socket.io handlers
     io.on('connection', (socket) => {
       socket.on('storage:get', async (key: string, callback) => {
-        const value = await storage.getItem(key)
+        const value = storage.get(key) ?? null
         callback(value)
       })
 
       socket.on('storage:set', async ({ key, value }, callback) => {
         try {
-          await storage.setItem(key, value)
+          storage.set(key, value)
           socket.to(`key:${key}`).emit('storage:updated', { key, value })
           if (callback) {
             callback({ success: true, status: 'ok' })

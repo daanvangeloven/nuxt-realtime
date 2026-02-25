@@ -8,7 +8,10 @@ export default defineNuxtConfig({
   },
   nuxtRealtime: {
     storage: {
-      driver: 'memory',
+      driver: 'redis',
+      host: 'localhost',
+      port: 6379,
     },
   },
-})
+},
+)
