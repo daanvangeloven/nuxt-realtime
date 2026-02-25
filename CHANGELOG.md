@@ -1,6 +1,22 @@
 # Changelog
 
 
+## v0.0.4
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.3.0...v0.0.4)
+
+### 🚀 Enhancements
+
+- **core:** Module now uses nitro storage directly ([995dd91](https://github.com/daanvangeloven/nuxt-realtime/commit/995dd91))
+
+### 📖 Documentation
+
+- **roadmap:** Added roadmap ([#14](https://github.com/daanvangeloven/nuxt-realtime/pull/14))
+
+### ❤️ Contributors
+
+- Daan Van Geloven <daanvangeloven@gmail.com>
+
 ## v0.0.3
 
 
