@@ -2,7 +2,7 @@ import { defineNuxtPlugin, useRuntimeConfig } from '#imports'
 import { io } from 'socket.io-client'
 import type { RealtimeSocket } from './types'
 
-export default defineNuxtPlugin(() => {
+export default defineNuxtPlugin((): { provide: { realtimeSocket: RealtimeSocket } } => {
   const config = useRuntimeConfig()
 
   // Defaults to window.location.host if no socket url is provided
