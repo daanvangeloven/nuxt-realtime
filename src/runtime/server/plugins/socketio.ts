@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineNitroPlugin, useStorage, useRuntimeConfig } from 'nitropack/runtime'
 import { Server as Engine } from 'engine.io'
 import { Server } from 'socket.io'
-import { defineEventHandler } from '#build/types/nitro-imports'
+import { defineEventHandler } from 'h3'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
 // but Engine.IO requires them. These interfaces document the internal properties we rely on.
