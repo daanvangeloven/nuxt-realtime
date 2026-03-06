@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v0.0.6
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.5...v0.0.6)
+
+### 🩹 Fixes
+
+- **core:** Fixed faulty import on nitro event handler ([54bc3f5](https://github.com/daanvangeloven/nuxt-realtime/commit/54bc3f5))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.0.5
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.4...v0.0.5)
