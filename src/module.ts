@@ -1,5 +1,5 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
-import type { StorageMounts, NitroConfig } from 'nitropack'
+import type { StorageMounts } from 'nitropack'
 
 export interface CleanupOptions {
   /**
@@ -72,8 +72,7 @@ export default defineNuxtModule<ModuleOptions>({
 
     logger.warn('nuxt-realtime is in early development. APIs may change without notice.')
 
-    // @ts-expect-error - nitro:config hook exists at runtime but is not typed in NuxtHooks in Nuxt 4
-    nuxt.hook('nitro:config', (nitroConfig: NitroConfig) => {
+    nuxt.hook('nitro:config', (nitroConfig) => {
       nitroConfig.storage ??= {}
       nitroConfig.storage['nuxt-realtime'] = {
         driver: 'memory',
