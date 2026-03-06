@@ -80,8 +80,9 @@ export default defineNitroPlugin((nitroApp) => {
     })
 
     socket.on('storage:heartbeat', async () => {
+      // Touch leases for all keys this socket is subscribed to
       const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
-      await Promise.all(storageRooms.map(room => touchLease(room.slice(4))))
+      await Promise.all(storageRooms.map(room => touchLease(room.slice('key:'.length))))
     })
 
     // Event pub/sub operations
