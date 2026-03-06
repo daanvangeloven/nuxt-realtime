@@ -1,6 +1,32 @@
 # Changelog
 
 
+## v0.0.5
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.4...v0.0.5)
+
+### 🚀 Enhancements
+
+- **core:** Implemented lease based cleanup system ([45b747b](https://github.com/daanvangeloven/nuxt-realtime/commit/45b747b))
+
+### 🩹 Fixes
+
+- **core:** Made heartbeat socket event more explicit ([346e8f8](https://github.com/daanvangeloven/nuxt-realtime/commit/346e8f8))
+
+### 📖 Documentation
+
+- **core:** Added cleanup section to installation documentation ([026ab2d](https://github.com/daanvangeloven/nuxt-realtime/commit/026ab2d))
+
+### 🏡 Chore
+
+- **release:** V0.0.4 ([4904eeb](https://github.com/daanvangeloven/nuxt-realtime/commit/4904eeb))
+- Bump versions ([a2b0cf6](https://github.com/daanvangeloven/nuxt-realtime/commit/a2b0cf6))
+- Audit fix ([ec4abd5](https://github.com/daanvangeloven/nuxt-realtime/commit/ec4abd5))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.0.4
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.3.0...v0.0.4)
