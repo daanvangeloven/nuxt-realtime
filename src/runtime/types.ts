@@ -40,6 +40,7 @@ export interface ClientToServerEvents {
   'storage:set': (data: { key: string, value: unknown }, callback: (response: StorageSetResponse) => void) => void
   'storage:subscribe': (key: string) => void
   'storage:unsubscribe': (key: string) => void
+  'storage:heartbeat': () => void
   'event:subscribe': (channel: string) => void
   'event:unsubscribe': (channel: string) => void
   'event:publish': (data: EventPublishPayload, callback: (response: EventPublishResponse) => void) => void

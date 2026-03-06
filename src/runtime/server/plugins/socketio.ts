@@ -1,9 +1,9 @@
 import type { Duplex } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { defineNitroPlugin, useStorage } from 'nitropack/runtime'
+import { defineNitroPlugin, useStorage, useRuntimeConfig } from 'nitropack/runtime'
 import { Server as Engine } from 'engine.io'
 import { Server } from 'socket.io'
-import { defineEventHandler } from 'h3'
+import { defineEventHandler } from '#build/types/nitro-imports'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
 // but Engine.IO requires them. These interfaces document the internal properties we rely on.
@@ -28,6 +28,12 @@ export default defineNitroPlugin((nitroApp) => {
   const io = new Server()
   const engine = new Engine()
   const storage = useStorage('nuxt-realtime')
+  const config = useRuntimeConfig()
+  const cleanupConfig = (config.public.nuxtRealtime as { cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false }).cleanup
+
+  async function touchLease(key: string) {
+    await storage.setItem(`_lease:${key}`, { lastSeen: Date.now() })
+  }
 
   io.bind(engine)
 
@@ -43,6 +49,7 @@ export default defineNitroPlugin((nitroApp) => {
     socket.on('storage:set', async ({ key, value }, callback) => {
       try {
         await storage.setItem(key, value)
+        await touchLease(key)
         socket.to(`key:${key}`).emit('storage:updated', { key, value })
 
         if (callback) {
@@ -63,12 +70,19 @@ export default defineNitroPlugin((nitroApp) => {
       }
     })
 
-    socket.on('storage:subscribe', (key: string) => {
+    socket.on('storage:subscribe', async (key: string) => {
       socket.join(`key:${key}`)
+      await touchLease(key)
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
       socket.leave(`key:${key}`)
+    })
+
+    socket.on('storage:heartbeat', async () => {
+      // Touch leases for all keys this socket is subscribed to
+      const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
+      await Promise.all(storageRooms.map(room => touchLease(room.slice('key:'.length))))
     })
 
     // Event pub/sub operations
@@ -106,18 +120,47 @@ export default defineNitroPlugin((nitroApp) => {
     })
   })
 
+  // Cleanup job
+  if (cleanupConfig) {
+    const { cleanupInterval, idleThreshold } = cleanupConfig
+
+    // Add jitter (±10%) so multiple servers don't all scan at the same instant
+    const jitter = cleanupInterval * 0.1
+    const interval = cleanupInterval + Math.random() * jitter * 2 - jitter
+
+    setInterval(async () => {
+      try {
+        const allKeys = await storage.getKeys()
+        const leaseKeys = allKeys.filter(k => k.startsWith('_lease:'))
+
+        for (const leaseKey of leaseKeys) {
+          const lease = await storage.getItem<{ lastSeen: number }>(leaseKey)
+          if (lease && Date.now() - lease.lastSeen > idleThreshold) {
+            const dataKey = leaseKey.slice('_lease:'.length)
+            await storage.removeItem(leaseKey)
+            await storage.removeItem(dataKey)
+            console.log(`[nuxt-realtime] Cleaned up idle key: ${dataKey}`)
+          }
+        }
+      }
+      catch (error) {
+        console.error('[nuxt-realtime] Cleanup job error:', error)
+      }
+    }, interval)
+  }
+
   const engineWithInternals = engine as unknown as EngineWithInternals
   // There currently is no better way to use socket.io with crossws
   // https://socket.io/how-to/use-with-nuxt#hook-the-socketio-server
   // https://github.com/h3js/crossws/issues/138
   nitroApp.router.use('/socket.io/', defineEventHandler({
-    handler(event) {
+    handler(event: unknown) {
       const nodeEvent = event as unknown as NodeEvent
       engine.handleRequest(nodeEvent.node.req as Parameters<Engine['handleRequest']>[0], nodeEvent.node.res)
       nodeEvent._handled = true
     },
     websocket: {
-      open(peer) {
+      open(peer: unknown) {
         const { _internal, websocket } = peer as unknown as WebSocketPeer
         engineWithInternals.prepare(_internal.nodeReq)
         engineWithInternals.onWebSocket(_internal.nodeReq, _internal.nodeReq.socket, websocket)
