@@ -1,5 +1,6 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
+import type { ReactiveRedisDriverOptions } from './drivers/redis'
 
 declare module '@nuxt/schema' {
   interface PublicRuntimeConfig {
@@ -7,6 +8,12 @@ declare module '@nuxt/schema' {
       socketUrl: string | undefined
       socketPath: string | undefined
       cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
+    }
+  }
+
+  interface RuntimeConfig {
+    nuxtRealtime: {
+      redis?: ReactiveRedisDriverOptions
     }
   }
 }
@@ -31,17 +38,42 @@ export interface CleanupOptions {
 
 export interface ModuleOptions {
   /**
-   * Storage configuration for the realtime module.
+   * Storage configuration for the realtime module. Accepts any Nitro storage driver config.
+   * For cross-server sync across multiple instances, use the `redis` option instead.
    * @example
    * ```ts
    * storage: {
-   *   driver: 'redis',
-   *   host: 'localhost',
-   *   port: 6379,
+   *   driver: 'memory', // default
    * }
    * ```
    */
   storage?: StorageMounts[string]
+
+  /**
+   * Redis connection options for cross-server state synchronisation.
+   * When set, the module uses `reactiveRedisDriver` under the hood, which layers
+   * Redis pub/sub on top of the standard Redis storage driver so that writes on
+   * one server instance are broadcast to Socket.IO clients connected to other
+   * instances in real time.
+   *
+   * Requires `ioredis >= 5` to be installed as a peer dependency.
+   *
+   * @example
+   * ```ts
+   * redis: {
+   *   host: 'localhost',
+   *   port: 6379,
+   * }
+   * ```
+   *
+   * @example Using a Redis URL
+   * ```ts
+   * redis: {
+   *   url: 'redis://localhost:6379',
+   * }
+   * ```
+   */
+  redis?: ReactiveRedisDriverOptions
 
   /**
    * Socket.io configuration options. If not provided, the module will attempt to connect to a socket.io server on the same origin.
@@ -72,21 +104,29 @@ export default defineNuxtModule<ModuleOptions>({
     name: 'nuxt-realtime',
     configKey: 'nuxtRealtime',
   },
-  defaults: {
-    storage: {
-      driver: 'memory',
-    },
-  },
+  defaults: {},
   setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
 
     logger.warn('nuxt-realtime is in early development. APIs may change without notice.')
 
+    if (options.redis && options.storage) {
+      logger.warn('nuxt-realtime: both `redis` and `storage` are configured. `redis` takes precedence and `storage` will be ignored.')
+    }
+
     nuxt.hook('nitro:config', (nitroConfig) => {
       nitroConfig.storage ??= {}
-      nitroConfig.storage['nuxt-realtime'] = {
-        driver: 'memory',
-        ...options.storage,
+      // When `redis` is set the reactive driver is mounted at runtime by the
+      // server plugin; register a memory placeholder so Nitro does not complain
+      // about an unconfigured mount.
+      if (!options.redis) {
+        nitroConfig.storage['nuxt-realtime'] = {
+          driver: 'memory',
+          ...options.storage,
+        }
+      }
+      else {
+        nitroConfig.storage['nuxt-realtime'] = { driver: 'memory' }
       }
     })
 
@@ -104,6 +144,10 @@ export default defineNuxtModule<ModuleOptions>({
       socketUrl: options.socketio?.serverUrl, // undefined = same origin
       socketPath: options.socketio?.path,
       cleanup: cleanupConfig,
+    }
+
+    nuxt.options.runtimeConfig.nuxtRealtime = {
+      redis: options.redis,
     }
 
     // Add server plugin for socket.io initialization

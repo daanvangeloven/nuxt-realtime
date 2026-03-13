@@ -82,8 +82,6 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
   sub.on('message', (_channel, message) => {
     try {
       const { event, key, origin } = JSON.parse(message) as { event: string, key: string, origin: string }
-      // Skip events that originated from this instance — the storage:set handler
-      // already broadcasts to local Socket.IO clients immediately.
       if (origin === instanceId) return
       for (const cb of listeners) cb(event as 'update' | 'remove', key)
     }

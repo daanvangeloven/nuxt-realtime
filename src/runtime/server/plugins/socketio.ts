@@ -27,9 +27,23 @@ interface EngineWithInternals {
 export default defineNitroPlugin(async (nitroApp) => {
   const io = new Server()
   const engine = new Engine()
-  const storage = useStorage('nuxt-realtime')
   const config = useRuntimeConfig()
   const cleanupConfig = (config.public.nuxtRealtime as { cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false }).cleanup
+
+  // When Redis options are provided, mount the reactive driver so that writes
+  // from any server instance are broadcast to Socket.IO clients on all instances
+  // via Redis pub/sub. The memory placeholder registered by the module is
+  // replaced at startup before any storage operations take place.
+  const redisOpts = (config as { nuxtRealtime?: { redis?: Record<string, unknown> } }).nuxtRealtime?.redis
+  if (redisOpts) {
+    const driverPath = 'nuxt-realtime/drivers/redis'
+    const { reactiveRedisDriver } = await import(driverPath)
+    const rootStorage = useStorage() as unknown as { mount: (base: string, driver: unknown) => void, unmount: (base: string) => Promise<void> }
+    await rootStorage.unmount('nuxt-realtime')
+    rootStorage.mount('nuxt-realtime', reactiveRedisDriver(redisOpts))
+  }
+
+  const storage = useStorage('nuxt-realtime')
 
   async function touchLease(key: string) {
     await storage.setItem(`_lease:${key}`, { lastSeen: Date.now() })
@@ -37,15 +51,23 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   // Cross-server sync: watch for writes from other server instances and broadcast
   // to locally subscribed Socket.IO clients. Drivers that don't support native
-  // watch (e.g. memory) still work — updates are just local to each instance.
+  // watch (e.g. memory) still work updates are just local to each instance.
+  //
+  // NOTE: prefixStorage() does not wrap `watch`, so storage.watch() delegates to
+  // the root storage and keys arrive with the full "nuxt-realtime:" prefix.
+  // Strip it before using the key with the namespaced `storage` or room names.
+  const STORAGE_PREFIX = 'nuxt-realtime:'
   const unwatch = await storage.watch(async (event, key) => {
     if (event !== 'update') return
-    if (key.startsWith('_lease:')) return
+    if (!key.startsWith(STORAGE_PREFIX)) return
 
-    const value = await storage.getItem(key)
-    const room = `key:${key}`
+    const relKey = key.slice(STORAGE_PREFIX.length)
+    if (relKey.startsWith('_lease:')) return
+
+    const value = await storage.getItem(relKey)
+    const room = `key:${relKey}`
     if (io.sockets.adapter.rooms.has(room)) {
-      io.to(room).emit('storage:updated', { key, value })
+      io.to(room).emit('storage:updated', { key: relKey, value })
     }
   })
 
