@@ -253,10 +253,7 @@ describe('cleanup - job', () => {
       client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
     )
 
-    // Heartbeat refreshes the lease; ack ensures the handler has run before we assert
     await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
-
-    // Cleanup runs immediately after the heartbeat — the lease was just touched
     runCleanup(50)
 
     expect(storage.has('room:session-abc')).toBe(true)
@@ -279,7 +276,7 @@ describe('cleanup - job', () => {
     expect(storage.has('_lease:room:session-3')).toBe(false)
   })
 
-  it('only cleans up keys with a lease — leaves unmanaged keys alone', async () => {
+  it('only cleans up keys with a lease, leaves unmanaged keys alone', async () => {
     // Manually insert a key with no lease (e.g. seeded data)
     storage.set('config:feature-flags', { enabled: true })
     await wait(100)

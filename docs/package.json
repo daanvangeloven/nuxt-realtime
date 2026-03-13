@@ -11,7 +11,7 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
-    "@barzhsieh/nuxt-content-mermaid": "^2.2.1",
+    "@barzhsieh/nuxt-content-mermaid": "^2.2.3",
     "@iconify-json/lucide": "^1.2.86",
     "@iconify-json/simple-icons": "^1.2.67",
     "@iconify-json/vscode-icons": "^1.2.40",
