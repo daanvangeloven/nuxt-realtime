@@ -24,23 +24,36 @@ interface EngineWithInternals {
   onWebSocket: (req: IncomingMessage, socket: Duplex, websocket: WebSocket) => void
 }
 
+// Minimal interface for the shared pub/sub service used within this plugin.
+// The concrete implementation (RealtimePubSub) lives in drivers/redis.ts.
+interface PubSubService {
+  instanceId: string
+  publish(channel: string, data: unknown): Promise<void>
+  subscribe(channel: string, handler: (message: string) => void): () => void
+  dispose(): Promise<void>
+}
+
+const EVENT_CHANNEL = 'nuxt-realtime:events'
+
 export default defineNitroPlugin(async (nitroApp) => {
   const io = new Server()
   const engine = new Engine()
   const config = useRuntimeConfig()
   const cleanupConfig = (config.public.nuxtRealtime as { cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false }).cleanup
 
-  // When Redis options are provided, mount the reactive driver so that writes
-  // from any server instance are broadcast to Socket.IO clients on all instances
-  // via Redis pub/sub. The memory placeholder registered by the module is
-  // replaced at startup before any storage operations take place.
+  // When Redis options are provided, create a shared pub/sub service and mount
+  // the reactive driver. The pub/sub service is shared between the storage
+  // driver and the event relay so the total stays at 2 Redis connections.
   const redisOpts = (config as { nuxtRealtime?: { redis?: Record<string, unknown> } }).nuxtRealtime?.redis
+  let pubsub: PubSubService | null = null
+
   if (redisOpts) {
     const driverPath = 'nuxt-realtime/drivers/redis'
-    const { reactiveRedisDriver } = await import(driverPath)
+    const { reactiveRedisDriver, RealtimePubSub } = await import(driverPath)
+    pubsub = new RealtimePubSub(redisOpts)
     const rootStorage = useStorage() as unknown as { mount: (base: string, driver: unknown) => void, unmount: (base: string) => Promise<void> }
     await rootStorage.unmount('nuxt-realtime')
-    rootStorage.mount('nuxt-realtime', reactiveRedisDriver(redisOpts))
+    rootStorage.mount('nuxt-realtime', reactiveRedisDriver({ ...redisOpts, pubsub }))
   }
 
   const storage = useStorage('nuxt-realtime')
@@ -80,10 +93,42 @@ export default defineNitroPlugin(async (nitroApp) => {
     )
   }
 
+  // Cross-server event relay: forward events published on other server instances
+  // to locally subscribed Socket.IO clients. When no pub/sub is configured the
+  // event system falls back to single-server behavior.
+  let unsubscribeEvents: (() => void) | null = null
+
+  if (pubsub) {
+    unsubscribeEvents = pubsub.subscribe(EVENT_CHANNEL, (message) => {
+      try {
+        const { channel, data, origin } = JSON.parse(message) as { channel: string, data: unknown, origin: string }
+        if (origin === pubsub!.instanceId) return
+
+        const room = `event:${channel}`
+        if (io.sockets.adapter.rooms.has(room)) {
+          io.to(room).emit('event:received', { channel, data })
+        }
+      }
+      catch (e) {
+        console.error('[nuxt-realtime] event relay: failed to parse pub/sub message', e)
+      }
+    })
+  }
+  else {
+    console.warn(
+      '[nuxt-realtime] No Redis pub/sub configured. '
+      + 'Cross-server event sync is disabled. Events published on one server instance '
+      + 'will not reach clients connected to other instances. '
+      + 'Consider configuring Redis via nuxtRealtime.redis in nuxt.config.ts.',
+    )
+  }
+
   nitroApp.hooks.hook('close', async () => {
     if (typeof unwatch === 'function') {
       await unwatch()
     }
+    unsubscribeEvents?.()
+    await pubsub?.dispose()
   })
 
   io.bind(engine)
@@ -145,10 +190,11 @@ export default defineNitroPlugin(async (nitroApp) => {
       socket.leave(`event:${channel}`)
     })
 
-    socket.on('event:publish', ({ channel, data, includeSelf }, callback) => {
+    socket.on('event:publish', async ({ channel, data, includeSelf }, callback) => {
       try {
         const room = `event:${channel}`
 
+        // 1. Broadcast immediately to local subscribers
         if (includeSelf) {
           // Broadcast to all in room including sender
           io.to(room).emit('event:received', { channel, data })
@@ -156,6 +202,11 @@ export default defineNitroPlugin(async (nitroApp) => {
         else {
           // Broadcast to all in room except sender
           socket.to(room).emit('event:received', { channel, data })
+        }
+
+        // 2. Relay to other server instances via shared pub/sub
+        if (pubsub) {
+          await pubsub.publish(EVENT_CHANNEL, { channel, data, origin: pubsub.instanceId })
         }
 
         if (callback) {
