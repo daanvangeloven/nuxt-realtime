@@ -2,7 +2,7 @@ import type { Driver, WatchCallback } from 'unstorage'
 import redisDriver from 'unstorage/drivers/redis'
 import { Redis } from 'ioredis'
 
-const CHANNEL = 'nuxt-realtime:watch'
+const STORAGE_CHANNEL = 'nuxt-realtime:watch'
 
 export interface ReactiveRedisDriverOptions {
   /**
@@ -35,6 +35,11 @@ export interface ReactiveRedisDriverOptions {
    * TLS options passed to ioredis.
    */
   tls?: object
+  /**
+   * Shared pub/sub service. When provided, the driver reuses its connections
+   * instead of opening a dedicated pub/sub pair.
+   */
+  pubsub?: RealtimePubSub
 }
 
 function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
@@ -51,12 +56,61 @@ function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
 }
 
 /**
+ * Shared pub/sub service that manages a single Redis publish connection and a
+ * single subscribe connection, regardless of how many features use pub/sub.
+ *
+ * Multiple channels and handlers are multiplexed over the same two connections.
+ */
+export class RealtimePubSub {
+  private pub: Redis
+  private sub: Redis
+  private handlers = new Map<string, Set<(message: string) => void>>()
+  readonly instanceId = crypto.randomUUID()
+
+  constructor(opts: ReactiveRedisDriverOptions) {
+    this.pub = createRedisClient(opts)
+    this.sub = createRedisClient(opts)
+
+    this.sub.on('message', (channel, message) => {
+      const channelHandlers = this.handlers.get(channel)
+      if (channelHandlers) {
+        for (const handler of channelHandlers) handler(message)
+      }
+    })
+  }
+
+  async publish(channel: string, data: unknown) {
+    await this.pub.publish(channel, JSON.stringify(data))
+  }
+
+  /**
+   * Subscribes to a Redis channel. Returns an unsubscribe function.
+   */
+  subscribe(channel: string, handler: (message: string) => void): () => void {
+    if (!this.handlers.has(channel)) {
+      this.handlers.set(channel, new Set())
+      this.sub.subscribe(channel)
+    }
+    this.handlers.get(channel)!.add(handler)
+    return () => {
+      this.handlers.get(channel)?.delete(handler)
+    }
+  }
+
+  async dispose() {
+    this.pub.disconnect()
+    this.sub.disconnect()
+  }
+}
+
+/**
  * A reactive unstorage driver that wraps the built-in Redis driver and adds
  * pub/sub-based cross-instance change notifications.
  *
  * Storage (CRUD) is handled by the underlying unstorage Redis driver.
- * Reactivity (cross-server change notification) is layered on top via two
- * dedicated ioredis pub/sub connections.
+ * Reactivity (cross-server change notification) is layered on top via a
+ * `RealtimePubSub` instance either provided externally (shared) or created
+ * internally (dedicated pair of connections).
  *
  * @example
  * ```ts
@@ -71,15 +125,16 @@ function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
  * ```
  */
 export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driver {
-  const base = redisDriver(opts)
-  const pub = createRedisClient(opts)
-  const sub = createRedisClient(opts)
+  const { pubsub: externalPubSub, ...baseOpts } = opts
+  const base = redisDriver(baseOpts)
 
-  const instanceId = crypto.randomUUID()
+  const pubsub = externalPubSub ?? new RealtimePubSub(opts)
+  const ownsPubSub = !externalPubSub
+
+  const { instanceId } = pubsub
   const listeners = new Set<WatchCallback>()
 
-  sub.subscribe(CHANNEL)
-  sub.on('message', (_channel, message) => {
+  const unsubscribe = pubsub.subscribe(STORAGE_CHANNEL, (message) => {
     try {
       const { event, key, origin } = JSON.parse(message) as { event: string, key: string, origin: string }
       if (origin === instanceId) return
@@ -95,12 +150,12 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
 
     async setItem(key, value, setOpts) {
       await base.setItem!(key, value, setOpts)
-      await pub.publish(CHANNEL, JSON.stringify({ event: 'update', key, origin: instanceId }))
+      await pubsub.publish(STORAGE_CHANNEL, { event: 'update', key, origin: instanceId })
     },
 
     async removeItem(key, removeOpts) {
       await base.removeItem!(key, removeOpts)
-      await pub.publish(CHANNEL, JSON.stringify({ event: 'remove', key, origin: instanceId }))
+      await pubsub.publish(STORAGE_CHANNEL, { event: 'remove', key, origin: instanceId })
     },
 
     watch(callback) {
@@ -111,9 +166,11 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
     },
 
     async dispose() {
+      unsubscribe()
       listeners.clear()
-      pub.disconnect()
-      sub.disconnect()
+      if (ownsPubSub) {
+        await pubsub.dispose()
+      }
       await base.dispose?.()
     },
   }
