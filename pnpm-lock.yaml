@@ -68,6 +68,9 @@ importers:
       husky:
         specifier: ^9.1.7
         version: 9.1.7
+      ioredis:
+        specifier: ^5.0.0
+        version: 5.9.3
       lint-staged:
         specifier: ^16.2.7
         version: 16.2.7
@@ -77,6 +80,9 @@ importers:
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+      unstorage:
+        specifier: latest
+        version: 1.17.4(db0@0.3.4(better-sqlite3@12.6.2))(ioredis@5.9.3)
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@25.3.5)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.0)(yaml@2.8.2)

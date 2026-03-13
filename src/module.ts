@@ -1,6 +1,16 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
 
+declare module '@nuxt/schema' {
+  interface PublicRuntimeConfig {
+    nuxtRealtime: {
+      socketUrl: string | undefined
+      socketPath: string | undefined
+      cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
+    }
+  }
+}
+
 export interface CleanupOptions {
   /**
    * How often (ms) the client sends a heartbeat to keep leases alive.

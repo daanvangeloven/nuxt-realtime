@@ -24,7 +24,7 @@ interface EngineWithInternals {
   onWebSocket: (req: IncomingMessage, socket: Duplex, websocket: WebSocket) => void
 }
 
-export default defineNitroPlugin((nitroApp) => {
+export default defineNitroPlugin(async (nitroApp) => {
   const io = new Server()
   const engine = new Engine()
   const storage = useStorage('nuxt-realtime')
@@ -34,6 +34,35 @@ export default defineNitroPlugin((nitroApp) => {
   async function touchLease(key: string) {
     await storage.setItem(`_lease:${key}`, { lastSeen: Date.now() })
   }
+
+  // Cross-server sync: watch for writes from other server instances and broadcast
+  // to locally subscribed Socket.IO clients. Drivers that don't support native
+  // watch (e.g. memory) still work — updates are just local to each instance.
+  const unwatch = await storage.watch(async (event, key) => {
+    if (event !== 'update') return
+    if (key.startsWith('_lease:')) return
+
+    const value = await storage.getItem(key)
+    const room = `key:${key}`
+    if (io.sockets.adapter.rooms.has(room)) {
+      io.to(room).emit('storage:updated', { key, value })
+    }
+  })
+
+  if (!unwatch || typeof unwatch !== 'function') {
+    console.warn(
+      '[nuxt-realtime] Storage driver does not support watch. '
+      + 'Cross-server sync is disabled. Updates from other server instances '
+      + 'will only be visible to clients on reconnect/refresh. '
+      + 'Consider using reactiveRedisDriver from nuxt-realtime/drivers/redis.',
+    )
+  }
+
+  nitroApp.hooks.hook('close', async () => {
+    if (typeof unwatch === 'function') {
+      await unwatch()
+    }
+  })
 
   io.bind(engine)
 
