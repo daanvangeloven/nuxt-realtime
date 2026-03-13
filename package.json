@@ -22,6 +22,10 @@
     ".": {
       "types": "./dist/types.d.mts",
       "import": "./dist/module.mjs"
+    },
+    "./drivers/redis": {
+      "types": "./dist/drivers/redis.d.mts",
+      "import": "./dist/drivers/redis.mjs"
     }
   },
   "main": "./dist/module.mjs",
@@ -29,6 +33,9 @@
     "*": {
       ".": [
         "./dist/types.d.mts"
+      ],
+      "drivers/redis": [
+        "./dist/drivers/redis.d.mts"
       ]
     }
   },
@@ -56,7 +63,17 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"
   },
+  "peerDependencies": {
+    "ioredis": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "ioredis": "^5.0.0",
+    "unstorage": "latest",
     "@commitlint/cli": "^20.4.2",
     "@commitlint/config-conventional": "^20.4.2",
     "@nuxt/devtools": "^3.2.2",

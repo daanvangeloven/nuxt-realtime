@@ -7,10 +7,9 @@ export default defineNuxtConfig({
     },
   },
   nuxtRealtime: {
-    storage: {
-      driver: 'redis',
-      host: 'localhost',
-      port: 6379,
+    redis: {
+      host: process.env.REDIS_HOST ?? 'localhost',
+      port: Number(process.env.REDIS_PORT ?? 6379),
     },
   },
 },

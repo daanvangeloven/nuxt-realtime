@@ -1,5 +1,8 @@
 import { defineBuildConfig } from 'unbuild'
 
 export default defineBuildConfig({
-  externals: ['nitropack'],
+  entries: [
+    './src/drivers/redis',
+  ],
+  externals: ['nitropack', 'unstorage', 'unstorage/drivers/redis', 'ioredis'],
 })
