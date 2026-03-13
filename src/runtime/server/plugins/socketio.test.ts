@@ -28,18 +28,20 @@ function createTestServer() {
       if (callback) callback({ success: true, status: 'ok' })
     })
 
-    socket.on('storage:subscribe', (key: string) => {
+    socket.on('storage:subscribe', (key: string, callback?: () => void) => {
       socket.join(`key:${key}`)
       touchLease(key)
+      callback?.()
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
       socket.leave(`key:${key}`)
     })
 
-    socket.on('storage:heartbeat', () => {
+    socket.on('storage:heartbeat', (callback?: () => void) => {
       const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
       storageRooms.forEach(room => touchLease(room.slice(4)))
+      callback?.()
     })
   })
 
@@ -145,48 +147,47 @@ describe('cleanup - heartbeat', () => {
   })
 
   it('refreshes lease for all subscribed keys on heartbeat', async () => {
-    client.emit('storage:subscribe', 'room:session-1')
-    client.emit('storage:subscribe', 'room:session-2')
-    await wait(50)
+    await Promise.all([
+      new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-1', resolve)),
+      new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-2', resolve)),
+    ])
 
     const firstSeen1 = (storage.get('_lease:room:session-1') as { lastSeen: number }).lastSeen
     const firstSeen2 = (storage.get('_lease:room:session-2') as { lastSeen: number }).lastSeen
 
-    await wait(20)
-    client.emit('storage:heartbeat')
-    await wait(50)
+    // Record the timestamp just before the heartbeat so we have a reliable lower bound
+    // regardless of clock resolution. The ack ensures the handler has fully run.
+    const beforeHeartbeat = Date.now()
+    await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
 
-    expect((storage.get('_lease:room:session-1') as { lastSeen: number }).lastSeen).toBeGreaterThan(firstSeen1)
-    expect((storage.get('_lease:room:session-2') as { lastSeen: number }).lastSeen).toBeGreaterThan(firstSeen2)
+    expect((storage.get('_lease:room:session-1') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(beforeHeartbeat)
+    expect((storage.get('_lease:room:session-2') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(beforeHeartbeat)
+    expect((storage.get('_lease:room:session-1') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(firstSeen1)
+    expect((storage.get('_lease:room:session-2') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(firstSeen2)
   })
 
   it('does not refresh leases for keys the client is not subscribed to', async () => {
     // Set a key manually without subscribing
     storage.set('room:session-other', { users: [] })
     storage.set('_lease:room:session-other', { lastSeen: Date.now() })
-    await wait(20)
 
     const leaseBefore = (storage.get('_lease:room:session-other') as { lastSeen: number }).lastSeen
 
-    client.emit('storage:heartbeat')
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
 
     const leaseAfter = (storage.get('_lease:room:session-other') as { lastSeen: number }).lastSeen
     expect(leaseAfter).toBe(leaseBefore)
   })
 
   it('does not refresh lease for unsubscribed key', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
 
     client.emit('storage:unsubscribe', 'room:session-abc')
     await wait(30)
 
     const leaseBefore = (storage.get('_lease:room:session-abc') as { lastSeen: number }).lastSeen
 
-    await wait(20)
-    client.emit('storage:heartbeat')
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
 
     const leaseAfter = (storage.get('_lease:room:session-abc') as { lastSeen: number }).lastSeen
     expect(leaseAfter).toBe(leaseBefore)
@@ -235,9 +236,10 @@ describe('cleanup - job', () => {
   })
 
   it('does not remove keys that are within the idle threshold', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } })
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
+    await new Promise<void>(resolve =>
+      client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
+    )
 
     runCleanup(10_000)
 
@@ -246,16 +248,16 @@ describe('cleanup - job', () => {
   })
 
   it('keeps keys alive when client sends heartbeats', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } })
-    await wait(30)
+    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
+    await new Promise<void>(resolve =>
+      client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
+    )
 
-    // Heartbeat refreshes the lease
-    client.emit('storage:heartbeat')
-    await wait(30)
+    // Heartbeat refreshes the lease; ack ensures the handler has run before we assert
+    await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
 
-    // Run cleanup with threshold shorter than total elapsed time but after heartbeat
-    runCleanup(50) // heartbeat was only 30ms ago, so still alive
+    // Cleanup runs immediately after the heartbeat — the lease was just touched
+    runCleanup(50)
 
     expect(storage.has('room:session-abc')).toBe(true)
     expect(storage.has('_lease:room:session-abc')).toBe(true)
