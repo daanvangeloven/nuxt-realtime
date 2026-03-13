@@ -41,12 +41,6 @@ export default defineNuxtConfig({
     },
   },
 
-  vite: {
-    optimizeDeps: {
-      include: ['dayjs'],
-    },
-  },
-
   eslint: {
     config: {
       stylistic: {
