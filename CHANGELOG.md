@@ -1,6 +1,31 @@
 # Changelog
 
 
+## v0.0.7
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.6...v0.0.7)
+
+### 🚀 Enhancements
+
+- **core:** Implemented custom redis driver for cross-server syncing ([d6204ad](https://github.com/daanvangeloven/nuxt-realtime/commit/d6204ad))
+- **core:** Implemented  synced events with pub/sub integration ([c8fdc5e](https://github.com/daanvangeloven/nuxt-realtime/commit/c8fdc5e))
+- **core:** Implemented syncing of useRealtimeState across multiple servers ([3776de2](https://github.com/daanvangeloven/nuxt-realtime/commit/3776de2))
+- **docs:** Updated technical documentation ([beed0d5](https://github.com/daanvangeloven/nuxt-realtime/commit/beed0d5))
+
+### 🩹 Fixes
+
+- **core:** Fixed flakey socketio test ([ed8a261](https://github.com/daanvangeloven/nuxt-realtime/commit/ed8a261))
+- **core:** Fixed sync issue ([1ddeb66](https://github.com/daanvangeloven/nuxt-realtime/commit/1ddeb66))
+
+### 🏡 Chore
+
+- **release:** V0.0.6 ([85219e9](https://github.com/daanvangeloven/nuxt-realtime/commit/85219e9))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+- Daan Van Geloven <daanvangeloven@gmail.com>
+
 ## v0.0.6
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.5...v0.0.6)
