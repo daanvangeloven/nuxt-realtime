@@ -1,6 +1,23 @@
 # Changelog
 
 
+## v0.0.8
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.7...v0.0.8)
+
+### 🚀 Enhancements
+
+- **docs): enhance useRealtimeState documentation with sync strategies and examples feat(tests:** Add tests for debounced and manual sync strategies in useRealtimeState ([5f6b47f](https://github.com/daanvangeloven/nuxt-realtime/commit/5f6b47f))
+- Enhance useRealtimeEvents with middleware support and wildcard subscriptions ([f201a7a](https://github.com/daanvangeloven/nuxt-realtime/commit/f201a7a))
+
+### 🏡 Chore
+
+- **release:** V0.0.7 ([d4f3185](https://github.com/daanvangeloven/nuxt-realtime/commit/d4f3185))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.0.7
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.6...v0.0.7)

@@ -1,6 +1,6 @@
 {
   "name": "nuxt-realtime",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "WebSocket integration for Nuxt 3",
   "repository": {
     "type": "git",
