@@ -20,6 +20,8 @@ const counter = useRealtimeState('counter', 0, {
         </button>
       </div>
 
+      <SyncStrategiesDemo class="my-4" />
+
       <EventsDemo class="my-4" />
 
       <Chatfeed />

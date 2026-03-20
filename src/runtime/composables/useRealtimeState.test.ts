@@ -187,3 +187,232 @@ describe('useRealtimeState - Integration', () => {
     expect(data.value).toBe('server-value')
   })
 })
+
+describe('useRealtimeState - debounced sync', () => {
+  let io: Server
+  let serverPort: number
+  let httpServer: ReturnType<typeof createServer>
+  let setCallCount: number
+
+  beforeEach(async () => {
+    setCallCount = 0
+    httpServer = createServer()
+    io = new Server(httpServer)
+    const storage = new Map<string, unknown>()
+
+    io.on('connection', (socket) => {
+      socket.on('storage:get', async (key: string, callback) => {
+        callback(storage.get(key) ?? null)
+      })
+
+      socket.on('storage:set', async ({ key, value }, callback) => {
+        setCallCount++
+        storage.set(key, value)
+        socket.to(`key:${key}`).emit('storage:updated', { key, value })
+        callback({ success: true, status: 'ok' })
+      })
+
+      socket.on('storage:subscribe', (key: string) => {
+        socket.join(`key:${key}`)
+      })
+
+      socket.on('storage:unsubscribe', (key: string) => {
+        socket.leave(`key:${key}`)
+      })
+    })
+
+    await new Promise<void>((resolve) => {
+      httpServer.listen(0, () => {
+        serverPort = (httpServer.address() as AddressInfo).port
+        resolve()
+      })
+    })
+
+    clientSocket = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>((resolve) => {
+      clientSocket.on('connect', () => resolve())
+    })
+  })
+
+  afterEach(async () => {
+    clientSocket.close()
+    io.close()
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve())
+    })
+  })
+
+  it('buffers rapid changes and only sends one server update', async () => {
+    const data = useRealtimeState('debounce-key', 'initial', {
+      sync: 'debounced',
+      debounceMs: 100,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Rapid consecutive updates
+    data.value = 'a'
+    data.value = 'b'
+    data.value = 'c'
+
+    // Value is optimistically updated immediately
+    expect(data.value).toBe('c')
+
+    // Before debounce fires, server has not been called for these updates
+    expect(setCallCount).toBe(0)
+
+    // Wait for debounce to fire
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    // Only one server call for the last value
+    expect(setCallCount).toBe(1)
+    expect(data.value).toBe('c')
+  })
+
+  it('resets debounce timer on each new value', async () => {
+    const data = useRealtimeState('debounce-reset-key', 'initial', {
+      sync: 'debounced',
+      debounceMs: 100,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    data.value = 'first'
+    await new Promise(resolve => setTimeout(resolve, 50))
+    data.value = 'second' // resets timer
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    // Timer not fired yet (only 50ms since last set)
+    expect(setCallCount).toBe(0)
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+    // Now fired
+    expect(setCallCount).toBe(1)
+    expect(data.value).toBe('second')
+  })
+})
+
+describe('useRealtimeState - manual sync', () => {
+  let io: Server
+  let serverPort: number
+  let httpServer: ReturnType<typeof createServer>
+  let serverStorage: Map<string, unknown>
+
+  beforeEach(async () => {
+    serverStorage = new Map()
+    httpServer = createServer()
+    io = new Server(httpServer)
+
+    io.on('connection', (socket) => {
+      socket.on('storage:get', async (key: string, callback) => {
+        callback(serverStorage.get(key) ?? null)
+      })
+
+      socket.on('storage:set', async ({ key, value }, callback) => {
+        serverStorage.set(key, value)
+        socket.to(`key:${key}`).emit('storage:updated', { key, value })
+        if (callback) {
+          callback({ success: true, status: 'ok' })
+        }
+      })
+
+      socket.on('storage:subscribe', (key: string) => {
+        socket.join(`key:${key}`)
+      })
+
+      socket.on('storage:unsubscribe', (key: string) => {
+        socket.leave(`key:${key}`)
+      })
+    })
+
+    await new Promise<void>((resolve) => {
+      httpServer.listen(0, () => {
+        serverPort = (httpServer.address() as AddressInfo).port
+        resolve()
+      })
+    })
+
+    clientSocket = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>((resolve) => {
+      clientSocket.on('connect', () => resolve())
+    })
+  })
+
+  afterEach(async () => {
+    clientSocket.close()
+    io.close()
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve())
+    })
+  })
+
+  it('does not sync to server on value change', async () => {
+    const data = useRealtimeState('manual-key', 'initial', { sync: 'manual' })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    data.value = 'changed'
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Local value updated
+    expect(data.value).toBe('changed')
+    // Server still has no value
+    expect(serverStorage.get('manual-key')).toBeUndefined()
+  })
+
+  it('marks isDirty when value changes', async () => {
+    const data = useRealtimeState('dirty-key', 'initial', { sync: 'manual' })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(data.isDirty.value).toBe(false)
+
+    data.value = 'changed'
+
+    expect(data.isDirty.value).toBe(true)
+  })
+
+  it('syncs to server and clears isDirty when sync() is called', async () => {
+    const data = useRealtimeState('sync-call-key', 'initial', { sync: 'manual' })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    data.value = 'updated'
+    expect(data.isDirty.value).toBe(true)
+
+    data.sync()
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(serverStorage.get('sync-call-key')).toBe('updated')
+    expect(data.isDirty.value).toBe(false)
+  })
+
+  it('clears isDirty when server broadcasts an update', async () => {
+    const data = useRealtimeState<string>('conflict-key', 'initial', { sync: 'manual' })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    data.value = 'local-change'
+    expect(data.isDirty.value).toBe(true)
+
+    // Another client pushes a new value
+    const anotherClient = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>(resolve => anotherClient.on('connect', () => resolve()))
+
+    anotherClient.emit('storage:set', { key: 'conflict-key', value: 'server-value' })
+
+    await new Promise(resolve => setTimeout(resolve, 150))
+
+    expect(data.value).toBe('server-value')
+    expect(data.isDirty.value).toBe(false)
+
+    anotherClient.close()
+  })
+
+  it('isDirty starts as false', async () => {
+    const data = useRealtimeState('fresh-key', 'initial', { sync: 'manual' })
+    expect(data.isDirty.value).toBe(false)
+  })
+})
