@@ -35,6 +35,21 @@ interface PubSubService {
 
 const EVENT_CHANNEL = 'nuxt-realtime:events'
 
+/**
+ * Returns all Socket.IO room names that should receive an event published to `channel`.
+ * Includes the exact channel room, all namespace-prefix wildcard rooms, and the global wildcard room.
+ *
+ * e.g. 'chat:room:message' → ['event:chat:room:message', 'event:chat:room:*', 'event:chat:*', 'event:*']
+ */
+function wildcardRooms(channel: string): string[] {
+  const rooms: string[] = [`event:${channel}`, 'event:*']
+  const parts = channel.split(':')
+  for (let i = 1; i < parts.length; i++) {
+    rooms.push(`event:${parts.slice(0, i).join(':')}:*`)
+  }
+  return rooms
+}
+
 export default defineNitroPlugin(async (nitroApp) => {
   const io = new Server()
   const engine = new Engine()
@@ -104,9 +119,9 @@ export default defineNitroPlugin(async (nitroApp) => {
         const { channel, data, origin } = JSON.parse(message) as { channel: string, data: unknown, origin: string }
         if (origin === pubsub!.instanceId) return
 
-        const room = `event:${channel}`
-        if (io.sockets.adapter.rooms.has(room)) {
-          io.to(room).emit('event:received', { channel, data })
+        const rooms = wildcardRooms(channel).filter(r => io.sockets.adapter.rooms.has(r))
+        if (rooms.length > 0) {
+          io.to(rooms).emit('event:received', { channel, data })
         }
       }
       catch (e) {
@@ -192,16 +207,15 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     socket.on('event:publish', async ({ channel, data, includeSelf }, callback) => {
       try {
-        const room = `event:${channel}`
-
-        // 1. Broadcast immediately to local subscribers
+        // 1. Broadcast immediately to local subscribers (exact channel + wildcard rooms).
+        //    Passing an array to .to() causes Socket.IO to deduplicate recipients, so a
+        //    client subscribed to multiple matching rooms receives the event only once.
+        const rooms = wildcardRooms(channel)
         if (includeSelf) {
-          // Broadcast to all in room including sender
-          io.to(room).emit('event:received', { channel, data })
+          io.to(rooms).emit('event:received', { channel, data })
         }
         else {
-          // Broadcast to all in room except sender
-          socket.to(room).emit('event:received', { channel, data })
+          socket.to(rooms).emit('event:received', { channel, data })
         }
 
         // 2. Relay to other server instances via shared pub/sub
