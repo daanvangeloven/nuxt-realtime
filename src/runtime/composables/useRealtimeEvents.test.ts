@@ -44,13 +44,19 @@ describe('useRealtimeEvents - Integration', () => {
 
       socket.on('event:publish', ({ channel, data, includeSelf }, callback) => {
         try {
-          const room = `event:${channel}`
+          // Fan out to exact channel + all wildcard rooms (mirrors production server logic).
+          // Using an array with .to() deduplicates recipients across rooms.
+          const parts = channel.split(':')
+          const rooms: string[] = [`event:${channel}`, 'event:*']
+          for (let i = 1; i < parts.length; i++) {
+            rooms.push(`event:${parts.slice(0, i).join(':')}:*`)
+          }
 
           if (includeSelf) {
-            io.to(room).emit('event:received', { channel, data })
+            io.to(rooms).emit('event:received', { channel, data })
           }
           else {
-            socket.to(room).emit('event:received', { channel, data })
+            socket.to(rooms).emit('event:received', { channel, data })
           }
 
           if (callback) {
@@ -343,5 +349,174 @@ describe('useRealtimeEvents - Integration', () => {
 
     expect(channel2Data).toHaveLength(1)
     expect(channel2Data[0]).toEqual({ channel: 2 })
+  })
+
+  // --- Wildcard matching ---
+
+  it('namespace wildcard (chat:*) receives events from all chat: channels', async () => {
+    const events = useRealtimeEvents()
+    const received: Array<{ data: unknown, channel: string }> = []
+
+    events.subscribe('chat:*', (data, actualChannel) => {
+      received.push({ data, channel: actualChannel! })
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
+    await events.publish('chat:typing', { userId: '1' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).toEqual({ data: { text: 'hello' }, channel: 'chat:message' })
+    expect(received[1]).toEqual({ data: { userId: '1' }, channel: 'chat:typing' })
+  })
+
+  it('namespace wildcard does not receive events from other namespaces', async () => {
+    const events = useRealtimeEvents()
+    const chatReceived: unknown[] = []
+    const notifReceived: unknown[] = []
+
+    events.subscribe('chat:*', data => chatReceived.push(data))
+    events.subscribe('notif:*', data => notifReceived.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(chatReceived).toHaveLength(1)
+    expect(notifReceived).toHaveLength(0)
+  })
+
+  it('global wildcard (*) receives events from all channels', async () => {
+    const events = useRealtimeEvents()
+    const received: Array<{ data: unknown, channel: string }> = []
+
+    events.subscribe('*', (data, actualChannel) => {
+      received.push({ data, channel: actualChannel! })
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
+    await events.publish('notifications', { msg: 'alert' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toHaveLength(2)
+    expect(received.map(r => r.channel)).toEqual(['chat:message', 'notifications'])
+  })
+
+  it('exact subscriber and wildcard subscriber both receive the same event', async () => {
+    const events = useRealtimeEvents()
+    const exactReceived: unknown[] = []
+    const wildcardReceived: unknown[] = []
+
+    events.subscribe('chat:message', data => exactReceived.push(data))
+    events.subscribe('chat:*', data => wildcardReceived.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('chat:message', { text: 'hi' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(exactReceived).toHaveLength(1)
+    expect(wildcardReceived).toHaveLength(1)
+  })
+
+  // --- Middleware ---
+
+  it('middleware can block events from reaching subscribers', async () => {
+    const blockAll: import('./useRealtimeEvents').EventMiddleware = (_event, _next) => {
+      // never calls next — blocks the event
+    }
+
+    const events = useRealtimeEvents({ middleware: [blockAll] })
+    const received: unknown[] = []
+
+    events.subscribe('blocked-channel', data => received.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('blocked-channel', { msg: 'should be blocked' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toHaveLength(0)
+  })
+
+  it('middleware can transform event data before subscribers receive it', async () => {
+    const transform: import('./useRealtimeEvents').EventMiddleware = (event, next) => {
+      event.data = { ...(event.data as object), transformed: true }
+      next()
+    }
+
+    const events = useRealtimeEvents({ middleware: [transform] })
+    const received: unknown[] = []
+
+    events.subscribe('transform-channel', data => received.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('transform-channel', { original: true }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toHaveLength(1)
+    expect(received[0]).toEqual({ original: true, transformed: true })
+  })
+
+  it('middleware runs in order and each must call next to continue', async () => {
+    const order: number[] = []
+
+    const first: import('./useRealtimeEvents').EventMiddleware = (event, next) => {
+      order.push(1)
+      next()
+    }
+    const second: import('./useRealtimeEvents').EventMiddleware = (event, next) => {
+      order.push(2)
+      next()
+    }
+
+    const events = useRealtimeEvents({ middleware: [first, second] })
+    const received: unknown[] = []
+
+    events.subscribe('ordered-channel', data => received.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('ordered-channel', { msg: 'test' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(order).toEqual([1, 2])
+    expect(received).toHaveLength(1)
+  })
+
+  // --- Type-safe events (runtime behaviour; compile-time checks are in the type definitions) ---
+
+  it('type-safe event map constrains publish and subscribe at runtime', async () => {
+    interface AppEvents {
+      'user:login': { userId: string }
+      'user:logout': { userId: string }
+    }
+
+    const events = useRealtimeEvents<AppEvents>()
+    const received: unknown[] = []
+
+    events.subscribe('user:login', data => received.push(data))
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    await events.publish('user:login', { userId: 'abc' }, { includeSelf: true })
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toHaveLength(1)
+    expect(received[0]).toEqual({ userId: 'abc' })
   })
 })
