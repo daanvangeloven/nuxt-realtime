@@ -1,6 +1,7 @@
 import { ref, computed, onUnmounted, readonly, type Ref, type WritableComputedRef } from 'vue'
+import { createConsola, LogLevels } from 'consola'
+import { useNuxtApp, useRuntimeConfig } from '#app'
 import type { StorageSetResponse, StorageUpdatePayload } from '../types'
-import { useNuxtApp } from '#app'
 
 export type SyncStrategy = 'immediate' | 'debounced' | 'manual'
 
@@ -62,11 +63,25 @@ export interface UseRealtimeStateReturn<T> extends WritableComputedRef<T> {
   sync: () => void
 }
 
+const LOG_LEVEL_MAP: Record<string, number> = {
+  debug: LogLevels.debug,
+  info: LogLevels.info,
+  warn: LogLevels.warn,
+  error: LogLevels.error,
+  silent: LogLevels.silent,
+}
+
 export function useRealtimeState<T>(key: string, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T>
 export function useRealtimeState<T>(key: string, defaultValue: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T>
-
 export function useRealtimeState<T>(key: string, defaultValue?: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T> {
   const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
+
+  const loggingConfig = (useRuntimeConfig().public.nuxtRealtime as { logging: { level: string | null, format: string } }).logging
+  const resolvedLevel = (loggingConfig.level && loggingConfig.level in LOG_LEVEL_MAP)
+    ? LOG_LEVEL_MAP[loggingConfig.level]
+    : (import.meta.dev ? LogLevels.debug : LogLevels.warn)
+  const logger = createConsola({ level: resolvedLevel }).withTag('nuxt-realtime')
+
   const _value = ref<T>(defaultValue as T)
   const loading = ref(import.meta.client)
   const isDirty = ref(false)
@@ -96,7 +111,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:set', { key, value: newValue },
         (err: Error, response: StorageSetResponse) => {
           if (err || !response?.success) {
-            console.error('Failed to update storage:', err || response?.error)
+            logger.error('Failed to update storage:', err || response?.error)
             if (syncStrategy !== 'manual') {
               _value.value = oldValue
             }
@@ -182,7 +197,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:get', key,
         (err: Error, serverValue: unknown) => {
           if (err) {
-            console.error('Failed to fetch initial storage value:', err)
+            logger.error('Failed to fetch initial storage value:', err)
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
@@ -205,7 +220,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:get', key,
         (err: Error, serverValue: unknown) => {
           if (err) {
-            console.error('Failed to fetch storage value:', err)
+            logger.error('Failed to fetch storage value:', err)
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
