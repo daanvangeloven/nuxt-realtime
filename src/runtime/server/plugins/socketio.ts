@@ -4,6 +4,7 @@ import { defineNitroPlugin, useStorage, useRuntimeConfig } from 'nitropack/runti
 import { Server as Engine } from 'engine.io'
 import { Server } from 'socket.io'
 import { defineEventHandler } from 'h3'
+import { createRealtimeLogger } from '../utils/logger'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
 // but Engine.IO requires them. These interfaces document the internal properties we rely on.
@@ -54,7 +55,12 @@ export default defineNitroPlugin(async (nitroApp) => {
   const io = new Server()
   const engine = new Engine()
   const config = useRuntimeConfig()
-  const cleanupConfig = (config.public.nuxtRealtime as { cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false }).cleanup
+  const realtimePublicConfig = config.public.nuxtRealtime as {
+    cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
+    logging: { level: string | null, format: string }
+  }
+  const cleanupConfig = realtimePublicConfig.cleanup
+  const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
   // When Redis options are provided, create a shared pub/sub service and mount
   // the reactive driver. The pub/sub service is shared between the storage
@@ -68,7 +74,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     pubsub = new RealtimePubSub(redisOpts)
     const rootStorage = useStorage() as unknown as { mount: (base: string, driver: unknown) => void, unmount: (base: string) => Promise<void> }
     await rootStorage.unmount('nuxt-realtime')
-    rootStorage.mount('nuxt-realtime', reactiveRedisDriver({ ...redisOpts, pubsub }))
+    rootStorage.mount('nuxt-realtime', reactiveRedisDriver({ ...redisOpts, pubsub, logger }))
   }
 
   const storage = useStorage('nuxt-realtime')
@@ -100,8 +106,8 @@ export default defineNitroPlugin(async (nitroApp) => {
   })
 
   if (!unwatch || typeof unwatch !== 'function') {
-    console.warn(
-      '[nuxt-realtime] Storage driver does not support watch. '
+    logger.warn(
+      'Storage driver does not support watch. '
       + 'Cross-server sync is disabled. Updates from other server instances '
       + 'will only be visible to clients on reconnect/refresh. '
       + 'Consider using reactiveRedisDriver from nuxt-realtime/drivers/redis.',
@@ -125,13 +131,13 @@ export default defineNitroPlugin(async (nitroApp) => {
         }
       }
       catch (e) {
-        console.error('[nuxt-realtime] event relay: failed to parse pub/sub message', e)
+        logger.error('Event relay: failed to parse pub/sub message', e)
       }
     })
   }
   else {
-    console.warn(
-      '[nuxt-realtime] No Redis pub/sub configured. '
+    logger.warn(
+      'No Redis pub/sub configured. '
       + 'Cross-server event sync is disabled. Events published on one server instance '
       + 'will not reach clients connected to other instances. '
       + 'Consider configuring Redis via nuxtRealtime.redis in nuxt.config.ts.',
@@ -149,7 +155,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   io.bind(engine)
 
   io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id)
+    logger.debug('Client connected:', socket.id)
 
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
@@ -171,7 +177,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         }
       }
       catch (error) {
-        console.error('Storage set error:', error)
+        logger.error('Storage set error:', error)
         if (callback) {
           callback({
             success: false,
@@ -228,7 +234,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         }
       }
       catch (error) {
-        console.error('Event publish error:', error)
+        logger.error('Event publish error:', error)
         if (callback) {
           callback({ success: false, error: 'Error while publishing event' })
         }
@@ -255,12 +261,12 @@ export default defineNitroPlugin(async (nitroApp) => {
             const dataKey = leaseKey.slice('_lease:'.length)
             await storage.removeItem(leaseKey)
             await storage.removeItem(dataKey)
-            console.log(`[nuxt-realtime] Cleaned up idle key: ${dataKey}`)
+            logger.debug(`Cleaned up idle key: ${dataKey}`)
           }
         }
       }
       catch (error) {
-        console.error('[nuxt-realtime] Cleanup job error:', error)
+        logger.error('Cleanup job error:', error)
       }
     }, interval)
   }

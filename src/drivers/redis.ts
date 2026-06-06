@@ -1,6 +1,7 @@
 import type { Driver, WatchCallback } from 'unstorage'
 import redisDriver from 'unstorage/drivers/redis'
 import { Redis } from 'ioredis'
+import type { ConsolaInstance } from 'consola'
 
 const STORAGE_CHANNEL = 'nuxt-realtime:watch'
 
@@ -40,6 +41,10 @@ export interface ReactiveRedisDriverOptions {
    * instead of opening a dedicated pub/sub pair.
    */
   pubsub?: RealtimePubSub
+  /**
+   * Logger instance for internal driver messages. When omitted, falls back to `console.error`.
+   */
+  logger?: ConsolaInstance
 }
 
 function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
@@ -125,7 +130,7 @@ export class RealtimePubSub {
  * ```
  */
 export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driver {
-  const { pubsub: externalPubSub, ...baseOpts } = opts
+  const { pubsub: externalPubSub, logger, ...baseOpts } = opts
   const base = redisDriver(baseOpts)
 
   const pubsub = externalPubSub ?? new RealtimePubSub(opts)
@@ -141,7 +146,12 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
       for (const cb of listeners) cb(event as 'update' | 'remove', key)
     }
     catch (e) {
-      console.error('[nuxt-realtime] reactiveRedisDriver: failed to parse pub/sub message', e)
+      if (logger) {
+        logger.error('reactiveRedisDriver: failed to parse pub/sub message', e)
+      }
+      else {
+        console.error('[nuxt-realtime] reactiveRedisDriver: failed to parse pub/sub message', e)
+      }
     }
   })
 

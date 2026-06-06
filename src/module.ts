@@ -8,6 +8,7 @@ declare module '@nuxt/schema' {
       socketUrl: string | undefined
       socketPath: string | undefined
       cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
+      logging: { level: string | undefined, format: string }
     }
   }
 
@@ -16,6 +17,20 @@ declare module '@nuxt/schema' {
       redis?: ReactiveRedisDriverOptions
     }
   }
+}
+
+export interface LoggingOptions {
+  /**
+   * Minimum log level to emit. Defaults to `'debug'` in development and `'warn'` in production.
+   * Set to `'silent'` to suppress all output.
+   */
+  level?: 'debug' | 'info' | 'warn' | 'error' | 'silent'
+  /**
+   * Log output format.
+   * - `'pretty'` (default): human-readable output via consola
+   * - `'json'`: newline-delimited JSON, useful for structured log ingestion
+   */
+  format?: 'pretty' | 'json'
 }
 
 export interface CleanupOptions {
@@ -97,6 +112,18 @@ export interface ModuleOptions {
    * @default { heartbeatInterval: 30_000, cleanupInterval: 300_000, idleThreshold: 3_600_000 }
    */
   cleanup?: CleanupOptions | false
+
+  /**
+   * Logging configuration for the realtime module.
+   * @example
+   * ```ts
+   * logging: {
+   *   level: 'warn', // 'debug' | 'info' | 'warn' | 'error' | 'silent'
+   *   format: 'json' // 'pretty' | 'json'
+   * }
+   * ```
+   */
+  logging?: LoggingOptions
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -144,6 +171,10 @@ export default defineNuxtModule<ModuleOptions>({
       socketUrl: options.socketio?.serverUrl, // undefined = same origin
       socketPath: options.socketio?.path,
       cleanup: cleanupConfig,
+      logging: {
+        level: options.logging?.level, // undefined = auto (debug in dev, warn in prod)
+        format: options.logging?.format ?? 'pretty',
+      },
     }
 
     nuxt.options.runtimeConfig.nuxtRealtime = {

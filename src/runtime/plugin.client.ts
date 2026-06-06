@@ -1,14 +1,18 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
 import { io } from 'socket.io-client'
 import type { RealtimeSocket } from './types'
+import { useRealtimeLogger } from './composables/useRealtimeLogger'
 
 export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
   const config = useRuntimeConfig()
-  const { socketUrl, socketPath, cleanup } = config.public.nuxtRealtime as {
+  const { socketUrl, socketPath, cleanup } = config.public.nuxtRealtime satisfies {
     socketUrl: string | undefined
     socketPath: string | undefined
     cleanup: { heartbeatInterval: number } | false
+    logging: { level: string | undefined, format: string }
   }
+
+  const logger = useRealtimeLogger()
 
   // Defaults to window.location.host if no socket url is provided
   const socket: RealtimeSocket = io(socketUrl, {
@@ -17,7 +21,7 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
   })
 
   socket.on('connect', () => {
-    console.log('Connected to realtime server')
+    logger.debug('Connected to realtime server')
   })
 
   if (cleanup) {
