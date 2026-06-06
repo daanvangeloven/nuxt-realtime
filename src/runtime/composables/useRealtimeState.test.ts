@@ -11,6 +11,9 @@ vi.mock('#app', () => ({
   useNuxtApp: () => ({
     $realtimeSocket: clientSocket,
   }),
+  useRuntimeConfig: () => ({
+    public: { nuxtRealtime: { logging: { level: 'silent' } } },
+  }),
 }))
 
 // Mock Vue's onUnmounted since we're not in a component context
