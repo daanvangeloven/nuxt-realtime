@@ -9,7 +9,7 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
     socketUrl: string | undefined
     socketPath: string | undefined
     cleanup: { heartbeatInterval: number } | false
-    logging: { level: string | null, format: string }
+    logging: { level: string | undefined, format: string }
   }
 
   const logger = useRealtimeLogger()

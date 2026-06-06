@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { LogLevels } from 'consola'
 import { useRuntimeConfig } from '#app'
-import { useRealtimeLogger } from './useRealtimeLogger'
+import { _resetLogger, useRealtimeLogger } from './useRealtimeLogger'
 
 vi.mock('#app', () => ({
   useRuntimeConfig: vi.fn(),
@@ -16,6 +16,7 @@ function mockLevel(level: string | null) {
 describe('useRealtimeLogger', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    _resetLogger()
   })
 
   // --- Level mapping ---

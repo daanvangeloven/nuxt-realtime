@@ -8,7 +8,7 @@ declare module '@nuxt/schema' {
       socketUrl: string | undefined
       socketPath: string | undefined
       cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
-      logging: { level: string | null, format: string }
+      logging: { level: string | undefined, format: string }
     }
   }
 
@@ -172,7 +172,7 @@ export default defineNuxtModule<ModuleOptions>({
       socketPath: options.socketio?.path,
       cleanup: cleanupConfig,
       logging: {
-        level: options.logging?.level ?? null, // null = auto (debug in dev, warn in prod)
+        level: options.logging?.level, // undefined = auto (debug in dev, warn in prod)
         format: options.logging?.format ?? 'pretty',
       },
     }

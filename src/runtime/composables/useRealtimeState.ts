@@ -67,7 +67,7 @@ export function useRealtimeState<T>(key: string, options?: useRealtimeStateOptio
 export function useRealtimeState<T>(key: string, defaultValue: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T>
 export function useRealtimeState<T>(key: string, defaultValue?: T, options?: useRealtimeStateOptions): UseRealtimeStateReturn<T> {
   const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
-  const logger = useRealtimeLogger()
+  const logger = import.meta.client ? useRealtimeLogger() : null
 
   const _value = ref<T>(defaultValue as T)
   const loading = ref(import.meta.client)
@@ -98,7 +98,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:set', { key, value: newValue },
         (err: Error, response: StorageSetResponse) => {
           if (err || !response?.success) {
-            logger.error('Failed to update storage:', err || response?.error)
+            logger?.error('Failed to update storage:', err || response?.error)
             if (syncStrategy !== 'manual') {
               _value.value = oldValue
             }
@@ -184,7 +184,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:get', key,
         (err: Error, serverValue: unknown) => {
           if (err) {
-            logger.error('Failed to fetch initial storage value:', err)
+            logger?.error('Failed to fetch initial storage value:', err)
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
@@ -207,7 +207,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       .emit('storage:get', key,
         (err: Error, serverValue: unknown) => {
           if (err) {
-            logger.error('Failed to fetch storage value:', err)
+            logger?.error('Failed to fetch storage value:', err)
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
