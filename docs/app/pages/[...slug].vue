@@ -34,8 +34,10 @@ useSeoMeta({
 
 const headline = computed(() => findPageHeadline(navigation?.value, page.value?.path))
 
-defineOgImageComponent('Docs', {
+defineOgImage('DocsBrowser', {
   headline: headline.value,
+  title: title || '',
+  description: description || '',
 })
 
 const links = computed(() => {

@@ -131,7 +131,16 @@
       "unhead@<2.1.13": ">=2.1.13",
       "mermaid@>=11.0.0-alpha.1 <=11.14.0": ">=11.15.0",
       "nitropack@<2.13.4": ">=2.13.4",
-      "uuid@<11.1.1": ">=11.1.1"
+      "uuid@<11.1.1": ">=11.1.1",
+      "vue": "3.5.35",
+      "@vue/runtime-core": "3.5.35",
+      "@vue/runtime-dom": "3.5.35",
+      "@vue/server-renderer": "3.5.35",
+      "@vue/compiler-core": "3.5.35",
+      "@vue/compiler-dom": "3.5.35",
+      "@vue/compiler-sfc": "3.5.35",
+      "@vue/reactivity": "3.5.35",
+      "@vue/shared": "3.5.35"
     }
   }
 }
