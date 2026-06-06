@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@nuxt/ui": "^4.4.0",
-    "nuxt": "^4.2.1",
+    "nuxt": "^4.4.7",
     "nuxt-realtime": "workspace:*",
     "tailwindcss": "^4.1.18"
   }
