@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.1.1
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.0...v0.1.1)
+
+### 🩹 Fixes
+
+- Og-image ([35dc948](https://github.com/daanvangeloven/nuxt-realtime/commit/35dc948))
+- Use satori for og-images ([5e6bee4](https://github.com/daanvangeloven/nuxt-realtime/commit/5e6bee4))
+
+### 🏡 Chore
+
+- **release:** V0.0.8 ([d78d336](https://github.com/daanvangeloven/nuxt-realtime/commit/d78d336))
+- **release:** V0.0.9 ([84d411e](https://github.com/daanvangeloven/nuxt-realtime/commit/84d411e))
+- Updated dependencies ([944824e](https://github.com/daanvangeloven/nuxt-realtime/commit/944824e))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.1.0
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.0.7...v0.0.8)
