@@ -16,7 +16,7 @@ useSeoMeta({
   ogDescription: description,
 })
 
-defineOgImage('DocsBrowser', {
+defineOgImageComponent('DocsSatori', {
   title: title || '',
   description: description || '',
 })
