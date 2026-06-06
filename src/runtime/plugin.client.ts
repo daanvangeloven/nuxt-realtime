@@ -1,4 +1,4 @@
-import { defineNuxtPlugin, useRuntimeConfig } from '#imports'
+import { defineNuxtPlugin, useRuntimeConfig } from '#app'
 import { io } from 'socket.io-client'
 import { createConsola, LogLevels } from 'consola'
 import type { RealtimeSocket } from './types'
@@ -11,7 +11,7 @@ const LOG_LEVEL_MAP: Record<string, number> = {
   silent: LogLevels.silent,
 }
 
-export default defineNuxtPlugin((): { provide: { realtimeSocket: RealtimeSocket } } => {
+export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
   const config = useRuntimeConfig()
   const { socketUrl, socketPath, cleanup, logging } = config.public.nuxtRealtime as {
     socketUrl: string | undefined
