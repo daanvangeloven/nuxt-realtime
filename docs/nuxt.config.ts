@@ -30,7 +30,7 @@ export default defineNuxtConfig({
     asyncContext: true,
   },
 
-  compatibilityDate: '2024-07-11',
+  compatibilityDate: '2026-06-08',
 
   nitro: {
     prerender: {
