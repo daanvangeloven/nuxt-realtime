@@ -9,7 +9,7 @@ declare module 'nitropack' {
     /**
      * Called with the Socket.IO `Server` instance before it is bound to the
      * transport engine and before any `connection` handlers are registered.
-     * Register `io.use()` middleware here to authenticate/authorise clients.
+     * Register `io.use()` middleware here to authenticate/authorize clients.
      *
      * @example
      * ```ts

@@ -193,9 +193,10 @@ describe('nuxt-realtime:io hook — middleware runs before connection', () => {
       next()
     })
 
-    let middlewareRanBeforeConnection = false
-    io.on('connection', (socket) => {
-      middlewareRanBeforeConnection = socket.data.fromMiddleware === true
+    const middlewareRanBeforeConnection = new Promise<boolean>((resolve) => {
+      io.on('connection', (socket) => {
+        resolve(socket.data.fromMiddleware === true)
+      })
     })
 
     const port = await new Promise<number>(resolve =>
@@ -203,9 +204,7 @@ describe('nuxt-realtime:io hook — middleware runs before connection', () => {
     )
 
     const client = await connectClient(port)
-    await wait(50)
-
-    expect(middlewareRanBeforeConnection).toBe(true)
+    await expect(middlewareRanBeforeConnection).resolves.toBe(true)
 
     client.close()
     io.close()
