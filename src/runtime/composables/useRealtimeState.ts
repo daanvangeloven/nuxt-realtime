@@ -81,12 +81,14 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   } = options ?? {}
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
-  let debounceBaseValue: T | undefined
+
+  // Last value confirmed by the server, used as the rollback target on a failed sync
+  let lastSyncedValue: T = defaultValue as T
 
   // Pending value queued while disconnected, flushed on reconnect
   let pendingSync: { value: T, active: boolean } = { value: undefined as T, active: false }
 
-  const pushToServer = (newValue: T, oldValue: T) => {
+  const pushToServer = (newValue: T) => {
     if (!socket) return
 
     if (!socket.connected) {
@@ -101,10 +103,11 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
           if (err || !response?.success) {
             logger?.error('Failed to update storage:', err || response?.error)
             if (syncStrategy !== 'manual') {
-              _value.value = oldValue
+              _value.value = lastSyncedValue
             }
           }
           else {
+            lastSyncedValue = newValue
             pendingSync.active = false
             if (syncStrategy === 'manual') {
               isDirty.value = false
@@ -124,27 +127,21 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
         return
       }
 
-      const oldValue = _value.value
-
       if (optimisticUpdates) {
         _value.value = newValue
       }
 
       if (syncStrategy === 'debounced') {
-        if (debounceTimer === null) {
-          debounceBaseValue = oldValue
-        }
         if (debounceTimer !== null) {
           clearTimeout(debounceTimer)
         }
         debounceTimer = setTimeout(() => {
-          pushToServer(newValue, debounceBaseValue as T)
+          pushToServer(newValue)
           debounceTimer = null
-          debounceBaseValue = undefined
         }, debounceMs)
       }
       else {
-        pushToServer(newValue, oldValue)
+        pushToServer(newValue)
       }
     },
   })
@@ -152,14 +149,14 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   // Explicitly push current local value to server
   const sync = () => {
     if (!socket) return
-    const currentValue = _value.value
-    pushToServer(currentValue, currentValue)
+    pushToServer(_value.value)
   }
 
   // Update handler
   const handleUpdate = ({ key: updatedKey, value: newValue }: StorageUpdatePayload) => {
     if (updatedKey === key) {
       _value.value = newValue as T
+      lastSyncedValue = newValue as T
       if (syncStrategy === 'manual') {
         isDirty.value = false
       }
@@ -175,9 +172,10 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
         (err: Error, serverValue: unknown) => {
           if (!err && serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
+            lastSyncedValue = serverValue as T
           }
           if (pendingSync.active) {
-            pushToServer(pendingSync.value, _value.value)
+            pushToServer(pendingSync.value)
           }
         })
   }
@@ -193,6 +191,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
+            lastSyncedValue = serverValue as T
           }
           loading.value = false
 
@@ -216,6 +215,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
           }
           else if (serverValue !== null && serverValue !== undefined) {
             _value.value = serverValue as T
+            lastSyncedValue = serverValue as T
           }
           loading.value = false
         })

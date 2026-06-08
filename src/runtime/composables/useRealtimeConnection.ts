@@ -36,7 +36,9 @@ export function useRealtimeConnection(options: UseRealtimeConnectionOptions = {}
   const attempt = ref<number | undefined>(undefined)
 
   if (socket) {
-    if (!socket.connected) {
+    // `active` is false once the socket has been manually disconnected (or the
+    // server sent a forced disconnect), meaning it won't try to reconnect.
+    if (!socket.connected && socket.active) {
       status.value = 'connecting'
     }
 
