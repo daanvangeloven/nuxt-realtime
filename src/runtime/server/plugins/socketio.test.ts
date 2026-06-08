@@ -1,21 +1,82 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Server } from 'socket.io'
-import { Server as Engine } from 'engine.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 describe('serverOptions passthrough', () => {
-  it('spreads configured serverOptions into the underlying engine', () => {
-    const serverOptions = {
-      cors: { origin: ['https://myapp.com'], credentials: true },
-      maxHttpBufferSize: 1e6,
+  const serverOptions = {
+    cors: { origin: ['https://myapp.com'], credentials: true },
+    maxHttpBufferSize: 1e6,
+  }
+
+  let EngineMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+
+    EngineMock = vi.fn()
+
+    vi.doMock('engine.io', () => ({ Server: EngineMock }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          socketio: { serverOptions },
+        },
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('passes nuxtRealtime.socketio.serverOptions to the Engine constructor', async () => {
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn() },
+      router: { use: vi.fn() },
     }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
 
-    const engine = new Engine({ ...serverOptions })
-
-    expect(engine.opts.cors).toEqual(serverOptions.cors)
-    expect(engine.opts.maxHttpBufferSize).toBe(serverOptions.maxHttpBufferSize)
+    expect(EngineMock).toHaveBeenCalledWith(
+      expect.objectContaining(serverOptions),
+    )
   })
 })
 
