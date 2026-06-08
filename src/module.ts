@@ -156,7 +156,7 @@ export default defineNuxtModule<ModuleOptions>({
     })
 
     const cleanupConfig = options.cleanup === false
-      ? undefined
+      ? false
       : {
           heartbeatInterval: 30_000,
           cleanupInterval: 300_000,
