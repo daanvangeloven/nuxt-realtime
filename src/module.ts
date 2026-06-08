@@ -1,7 +1,33 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
 import type { ServerOptions } from 'engine.io'
+import type { Server } from 'socket.io'
 import type { ReactiveRedisDriverOptions } from './drivers/redis'
+
+declare module 'nitropack' {
+  interface NitroRuntimeHooks {
+    /**
+     * Called with the Socket.IO `Server` instance before it is bound to the
+     * transport engine and before any `connection` handlers are registered.
+     * Register `io.use()` middleware here to authenticate/authorise clients.
+     *
+     * @example
+     * ```ts
+     * // server/plugins/realtime-auth.ts
+     * export default defineNitroPlugin((nitroApp) => {
+     *   nitroApp.hooks.hook('nuxt-realtime:io', (io) => {
+     *     io.use((socket, next) => {
+     *       const token = socket.handshake.auth.token
+     *       if (!verifyToken(token)) return next(new Error('Unauthorized'))
+     *       next()
+     *     })
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:io': (io: Server) => void | Promise<void>
+  }
+}
 
 declare module '@nuxt/schema' {
   interface PublicRuntimeConfig {
