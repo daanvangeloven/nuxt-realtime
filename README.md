@@ -5,21 +5,19 @@
 [![License][license-src]][license-href]
 [![Nuxt][nuxt-src]][nuxt-href]
 
-Real-time state synchronization for Nuxt applications using Socket.IO.
+Drop-in realtime state sync for Nuxt. Implement `useRealtimeState()` and it works across all connected clients.
 
-> **⚠️ Early Development Warning**
-> This module is currently in early development and is **not ready for production use**. APIs may change without notice, and features may be incomplete or unstable.
-
-<!-- - [✨ &nbsp;Release Notes](/CHANGELOG.md) -->
-<!-- - [🏀 Online playground](https://stackblitz.com/github/your-org/nuxt-realtime?file=playground%2Fapp.vue) -->
-<!-- - [📖 &nbsp;Documentation](https://example.com) -->
+> **🚧 Public Beta**
+> The API is stable but the module is actively evolving. Early adopters welcome, feedback and contributions are very appreciated!
 
 ## Features
 
-- 🔄 &nbsp;Real-time state synchronization across clients
+- 🔄 &nbsp;Real-time state synchronization across all connected clients
 - 🎯 &nbsp;Channel-based subscriptions for granular updates
 - 🔌 &nbsp;Built on Socket.IO for reliable WebSocket connections
-- 🎨 &nbsp;Simple composable API for Nuxt 3
+- 🎨 &nbsp;Works just like `useState`: no store setup, no manual socket handling
+- 🔐 &nbsp;Auth hooks for socket middleware
+- 🪶 &nbsp;Zero boilerplate
 
 ## Quick Setup
 
