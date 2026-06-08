@@ -81,6 +81,7 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
   } = options ?? {}
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  let debounceBaseValue: T | undefined
 
   // Pending value queued while disconnected, flushed on reconnect
   let pendingSync: { value: T, active: boolean } = { value: undefined as T, active: false }
@@ -130,12 +131,16 @@ export function useRealtimeState<T>(key: string, defaultValue?: T, options?: use
       }
 
       if (syncStrategy === 'debounced') {
+        if (debounceTimer === null) {
+          debounceBaseValue = oldValue
+        }
         if (debounceTimer !== null) {
           clearTimeout(debounceTimer)
         }
         debounceTimer = setTimeout(() => {
-          pushToServer(newValue, oldValue)
+          pushToServer(newValue, debounceBaseValue as T)
           debounceTimer = null
+          debounceBaseValue = undefined
         }, debounceMs)
       }
       else {

@@ -92,16 +92,21 @@ export default defineNitroPlugin(async (nitroApp) => {
   // Strip it before using the key with the namespaced `storage` or room names.
   const STORAGE_PREFIX = 'nuxt-realtime:'
   const unwatch = await storage.watch(async (event, key) => {
-    if (event !== 'update') return
-    if (!key.startsWith(STORAGE_PREFIX)) return
+    try {
+      if (event !== 'update') return
+      if (!key.startsWith(STORAGE_PREFIX)) return
 
-    const relKey = key.slice(STORAGE_PREFIX.length)
-    if (relKey.startsWith('_lease:')) return
+      const relKey = key.slice(STORAGE_PREFIX.length)
+      if (relKey.startsWith('_lease:')) return
 
-    const value = await storage.getItem(relKey)
-    const room = `key:${relKey}`
-    if (io.sockets.adapter.rooms.has(room)) {
-      io.to(room).emit('storage:updated', { key: relKey, value })
+      const value = await storage.getItem(relKey)
+      const room = `key:${relKey}`
+      if (io.sockets.adapter.rooms.has(room)) {
+        io.to(room).emit('storage:updated', { key: relKey, value })
+      }
+    }
+    catch (error) {
+      logger.error('Watch callback error:', error)
     }
   })
 
@@ -118,6 +123,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   // to locally subscribed Socket.IO clients. When no pub/sub is configured the
   // event system falls back to single-server behavior.
   let unsubscribeEvents: (() => void) | null = null
+  let cleanupIntervalId: ReturnType<typeof setInterval> | null = null
 
   if (pubsub) {
     unsubscribeEvents = pubsub.subscribe(EVENT_CHANNEL, (message) => {
@@ -145,6 +151,9 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
 
   nitroApp.hooks.hook('close', async () => {
+    if (cleanupIntervalId !== null) {
+      clearInterval(cleanupIntervalId)
+    }
     if (typeof unwatch === 'function') {
       await unwatch()
     }
@@ -159,8 +168,14 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
-      const value = await storage.getItem(key)
-      callback(value)
+      try {
+        const value = await storage.getItem(key)
+        callback(value)
+      }
+      catch (error) {
+        logger.error('Storage get error:', error)
+        callback(null)
+      }
     })
 
     socket.on('storage:set', async ({ key, value }, callback) => {
@@ -189,7 +204,12 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     socket.on('storage:subscribe', async (key: string) => {
       socket.join(`key:${key}`)
-      await touchLease(key)
+      try {
+        await touchLease(key)
+      }
+      catch (error) {
+        logger.error('Lease touch error on subscribe:', error)
+      }
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
@@ -197,9 +217,14 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:heartbeat', async () => {
-      // Touch leases for all keys this socket is subscribed to
-      const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
-      await Promise.all(storageRooms.map(room => touchLease(room.slice('key:'.length))))
+      try {
+        // Touch leases for all keys this socket is subscribed to
+        const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
+        await Promise.all(storageRooms.map(room => touchLease(room.slice('key:'.length))))
+      }
+      catch (error) {
+        logger.error('Heartbeat error:', error)
+      }
     })
 
     // Event pub/sub operations
@@ -250,7 +275,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     const jitter = cleanupInterval * 0.1
     const interval = cleanupInterval + Math.random() * jitter * 2 - jitter
 
-    setInterval(async () => {
+    cleanupIntervalId = setInterval(async () => {
       try {
         const allKeys = await storage.getKeys()
         const leaseKeys = allKeys.filter(k => k.startsWith('_lease:'))

@@ -135,8 +135,6 @@ export default defineNuxtModule<ModuleOptions>({
   setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
 
-    logger.warn('nuxt-realtime is in early development. APIs may change without notice.')
-
     if (options.redis && options.storage) {
       logger.warn('nuxt-realtime: both `redis` and `storage` are configured. `redis` takes precedence and `storage` will be ignored.')
     }

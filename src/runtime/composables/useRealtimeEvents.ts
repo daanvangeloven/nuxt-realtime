@@ -149,8 +149,7 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
 
   const { publishTimeout = 5000, middleware = [] } = options
 
-  // Map<channel, Map<userCallback, { handler, includeSelf }>>
-  const subscriptions = new Map<string, Map<SubscriberCallback, { handler: SubscriberCallback, includeSelf: boolean }>>()
+  const subscriptions = new Map<string, Set<SubscriberCallback>>()
 
   const handleEventReceived = ({ channel, data }: { channel: string, data: unknown }) => {
     // Collect all callbacks that should fire: exact match + any wildcard patterns.
@@ -160,7 +159,7 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
 
     for (const [pattern, patternSubs] of subscriptions) {
       if (pattern === channel || matchesWildcard(pattern, channel)) {
-        for (const [cb] of patternSubs) callbacks.push(cb)
+        for (const cb of patternSubs) callbacks.push(cb)
       }
     }
 
@@ -181,23 +180,20 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
   const subscribe = <K extends string>(
     channel: K,
     callback: (data: unknown, actualChannel?: string) => void,
-    subscribeOptions: UseRealtimeEventsSubscribeOptions = {},
+    _subscribeOptions: UseRealtimeEventsSubscribeOptions = {},
   ): (() => void) => {
     if (!socket) return () => {}
-
-    const { includeSelf = false } = subscribeOptions
 
     let channelSubs = subscriptions.get(channel)
     const isFirstSubscription = !channelSubs
 
     if (!channelSubs) {
-      channelSubs = new Map()
+      channelSubs = new Set()
       subscriptions.set(channel, channelSubs)
     }
 
     const cb = callback as SubscriberCallback
-    const handler: SubscriberCallback = (data, actualChannel) => cb(data, actualChannel)
-    channelSubs.set(cb, { handler, includeSelf })
+    channelSubs.add(cb)
 
     if (isFirstSubscription) {
       socket.emit('event:subscribe', channel)

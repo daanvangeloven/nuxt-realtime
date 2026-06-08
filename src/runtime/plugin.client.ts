@@ -25,9 +25,28 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
   })
 
   if (cleanup) {
-    setInterval(() => {
-      socket.emit('storage:heartbeat')
-    }, cleanup.heartbeatInterval)
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+
+    const startHeartbeat = () => {
+      if (heartbeatInterval !== null) return
+      heartbeatInterval = setInterval(() => {
+        socket.emit('storage:heartbeat')
+      }, cleanup.heartbeatInterval)
+    }
+
+    const stopHeartbeat = () => {
+      if (heartbeatInterval !== null) {
+        clearInterval(heartbeatInterval)
+        heartbeatInterval = null
+      }
+    }
+
+    socket.on('connect', startHeartbeat)
+    socket.on('disconnect', stopHeartbeat)
+
+    if (socket.connected) {
+      startHeartbeat()
+    }
   }
 
   return {

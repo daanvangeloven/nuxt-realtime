@@ -36,7 +36,9 @@ export function useRealtimeConnection(options: UseRealtimeConnectionOptions = {}
   const attempt = ref<number | undefined>(undefined)
 
   if (socket) {
-    status.value = 'connecting'
+    if (!socket.connected) {
+      status.value = 'connecting'
+    }
 
     // Socket event handlers
     const onConnect = () => {
