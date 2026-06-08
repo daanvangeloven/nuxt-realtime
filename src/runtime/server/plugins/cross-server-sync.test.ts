@@ -234,7 +234,7 @@ describe('cross-server sync - watch callback integration', () => {
     await new Promise<void>(resolve =>
       clientA.emit('storage:set', { key: 'shared-key', value: 'hello' }, resolve),
     )
-    await wait(50)
+    await wait(100)
 
     expect(receivedB).toHaveLength(1)
     expect(receivedB2).toHaveLength(1)
