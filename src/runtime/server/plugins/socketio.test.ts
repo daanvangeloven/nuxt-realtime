@@ -1,8 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Server } from 'socket.io'
+import { Server as Engine } from 'engine.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+
+describe('serverOptions passthrough', () => {
+  it('spreads configured serverOptions into the underlying engine', () => {
+    const serverOptions = {
+      cors: { origin: ['https://myapp.com'], credentials: true },
+      maxHttpBufferSize: 1e6,
+    }
+
+    const engine = new Engine({ ...serverOptions })
+
+    expect(engine.opts.cors).toEqual(serverOptions.cors)
+    expect(engine.opts.maxHttpBufferSize).toBe(serverOptions.maxHttpBufferSize)
+  })
+})
 
 // Re-implements the server-side cleanup logic from socketio.ts in a self-contained way
 // so it can be tested without Nitro/unstorage dependencies.
