@@ -164,6 +164,8 @@ export default defineNitroPlugin(async (nitroApp) => {
     await pubsub?.dispose()
   })
 
+  await nitroApp.hooks.callHook('nuxt-realtime:io', io)
+
   io.bind(engine)
 
   io.on('connection', (socket) => {

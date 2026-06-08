@@ -69,7 +69,7 @@ describe('serverOptions passthrough', () => {
   it('passes nuxtRealtime.socketio.serverOptions to the Engine constructor', async () => {
     const { default: pluginFactory } = await import('./socketio')
     const nitroApp = {
-      hooks: { hook: vi.fn() },
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
       router: { use: vi.fn() },
     }
     await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
@@ -77,6 +77,141 @@ describe('serverOptions passthrough', () => {
     expect(EngineMock).toHaveBeenCalledWith(
       expect.objectContaining(serverOptions),
     )
+  })
+})
+
+describe('nuxt-realtime:io hook', () => {
+  let EngineMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+
+    EngineMock = vi.fn()
+
+    vi.doMock('engine.io', () => ({ Server: EngineMock }))
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {},
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('calls the nuxt-realtime:io hook with the io instance before io.bind()', async () => {
+    const order: string[] = []
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn(() => order.push('bind'))
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: {
+        hook: vi.fn(),
+        callHook: vi.fn().mockImplementation(async (name: string) => {
+          if (name === 'nuxt-realtime:io') order.push('hook')
+        }),
+      },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(order.indexOf('hook')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('bind')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('hook')).toBeLessThan(order.indexOf('bind'))
+  })
+
+  it('passes the io instance to the hook callback', async () => {
+    let capturedIo: unknown
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: {
+        hook: vi.fn(),
+        callHook: vi.fn().mockImplementation(async (_name: string, io: unknown) => {
+          capturedIo = io
+        }),
+      },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(capturedIo).toBeDefined()
+  })
+})
+
+describe('nuxt-realtime:io hook — middleware runs before connection', () => {
+  it('middleware registered via io.use() executes before the connection handler', async () => {
+    const httpServer = createServer()
+    const io = new Server(httpServer)
+
+    // Simulate what a consumer does in their hook callback
+    io.use((socket, next) => {
+      socket.data.fromMiddleware = true
+      next()
+    })
+
+    const middlewareRanBeforeConnection = new Promise<boolean>((resolve) => {
+      io.on('connection', (socket) => {
+        resolve(socket.data.fromMiddleware === true)
+      })
+    })
+
+    const port = await new Promise<number>(resolve =>
+      httpServer.listen(0, () => resolve((httpServer.address() as AddressInfo).port)),
+    )
+
+    const client = await connectClient(port)
+    try {
+      await expect(middlewareRanBeforeConnection).resolves.toBe(true)
+    }
+    finally {
+      client.close()
+      io.close()
+      await new Promise<void>(resolve => httpServer.close(() => resolve()))
+    }
   })
 })
 
