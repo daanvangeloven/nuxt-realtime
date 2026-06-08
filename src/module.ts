@@ -1,5 +1,6 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
+import type { ServerOptions } from 'engine.io'
 import type { ReactiveRedisDriverOptions } from './drivers/redis'
 
 declare module '@nuxt/schema' {
@@ -15,6 +16,9 @@ declare module '@nuxt/schema' {
   interface RuntimeConfig {
     nuxtRealtime: {
       redis?: ReactiveRedisDriverOptions
+      socketio?: {
+        serverOptions?: ServerOptions
+      }
     }
   }
 }
@@ -103,6 +107,22 @@ export interface ModuleOptions {
   socketio?: {
     serverUrl?: string
     path?: string
+
+    /**
+     * Passthrough options for the underlying Engine.IO server
+     *
+     * @example
+     * ```ts
+     * serverOptions: {
+     *   cors: {
+     *     origin: ['https://myapp.com'],
+     *     credentials: true,
+     *   },
+     *   maxHttpBufferSize: 1e6, // 1 MB, the Engine.IO default
+     * }
+     * ```
+     */
+    serverOptions?: ServerOptions
   }
 
   /**
@@ -177,6 +197,9 @@ export default defineNuxtModule<ModuleOptions>({
 
     nuxt.options.runtimeConfig.nuxtRealtime = {
       redis: options.redis,
+      socketio: {
+        serverOptions: options.socketio?.serverOptions,
+      },
     }
 
     // Add server plugin for socket.io initialization

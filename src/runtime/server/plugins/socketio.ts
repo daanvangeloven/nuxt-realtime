@@ -1,7 +1,7 @@
 import type { Duplex } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineNitroPlugin, useStorage, useRuntimeConfig } from 'nitropack/runtime'
-import { Server as Engine } from 'engine.io'
+import { Server as Engine, type ServerOptions } from 'engine.io'
 import { Server } from 'socket.io'
 import { defineEventHandler } from 'h3'
 import { createRealtimeLogger } from '../utils/logger'
@@ -52,8 +52,6 @@ function wildcardRooms(channel: string): string[] {
 }
 
 export default defineNitroPlugin(async (nitroApp) => {
-  const io = new Server()
-  const engine = new Engine()
   const config = useRuntimeConfig()
   const realtimePublicConfig = config.public.nuxtRealtime as {
     cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
@@ -61,6 +59,11 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
+
+  const serverOptions = (config as { nuxtRealtime?: { socketio?: { serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio?.serverOptions
+
+  const io = new Server()
+  const engine = new Engine({ ...serverOptions })
 
   // When Redis options are provided, create a shared pub/sub service and mount
   // the reactive driver. The pub/sub service is shared between the storage
