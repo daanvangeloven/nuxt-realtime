@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.1.2
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.2...v0.1.2)
+
+### 🚀 Enhancements
+
+- **core:** Implemented production logging ([7b017d0](https://github.com/daanvangeloven/nuxt-realtime/commit/7b017d0))
+- Added json logging ([bba87f3](https://github.com/daanvangeloven/nuxt-realtime/commit/bba87f3))
+- **core:** Expose socketio engine options in moduleOptions ([dbba69a](https://github.com/daanvangeloven/nuxt-realtime/commit/dbba69a))
+- **core:** Enable auth hook with io.use ([19593b8](https://github.com/daanvangeloven/nuxt-realtime/commit/19593b8))
+
+### 🩹 Fixes
+
+- Small tweak ([5e41ba2](https://github.com/daanvangeloven/nuxt-realtime/commit/5e41ba2))
+- **core:** Abstracted logging to separate composable ([159544a](https://github.com/daanvangeloven/nuxt-realtime/commit/159544a))
+- Tweaked code and cleaned up possible memory issues ([b6d60fa](https://github.com/daanvangeloven/nuxt-realtime/commit/b6d60fa))
+- Tweaked test ([4b48f6f](https://github.com/daanvangeloven/nuxt-realtime/commit/4b48f6f))
+- **core:** Improved typesafety and removed unused option from useRealtimeEvent subscribe function ([7dcd674](https://github.com/daanvangeloven/nuxt-realtime/commit/7dcd674))
+- Made cleanup match contract ([8f195ad](https://github.com/daanvangeloven/nuxt-realtime/commit/8f195ad))
+- Review feedback ([5fef566](https://github.com/daanvangeloven/nuxt-realtime/commit/5fef566))
+- Improved test for server option passthrough ([2b904ea](https://github.com/daanvangeloven/nuxt-realtime/commit/2b904ea))
+- Improve socket test ([d5c11aa](https://github.com/daanvangeloven/nuxt-realtime/commit/d5c11aa))
+- Build config ([496d6a9](https://github.com/daanvangeloven/nuxt-realtime/commit/496d6a9))
+
+### 📖 Documentation
+
+- Added socketio server options to docs and split installation into quickstart and configuration ([ea8e928](https://github.com/daanvangeloven/nuxt-realtime/commit/ea8e928))
+
+### 🏡 Chore
+
+- **release:** V0.1.1 ([4dfb0f8](https://github.com/daanvangeloven/nuxt-realtime/commit/4dfb0f8))
+- Added claude PR review ([21dcdab](https://github.com/daanvangeloven/nuxt-realtime/commit/21dcdab))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.1.1
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.2...v0.1.1)
