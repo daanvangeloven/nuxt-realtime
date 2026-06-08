@@ -49,25 +49,3 @@ jobs:
 
       - name: Test
         run: pnpm run test
-
-  claude-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 10
-      - uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Review this PR. Focus on:
-            - Bugs and correctness issues
-            - TypeScript type safety
-            - Vue 3 / Nuxt best practices
-            - Composable patterns and reactivity pitfalls
-        
