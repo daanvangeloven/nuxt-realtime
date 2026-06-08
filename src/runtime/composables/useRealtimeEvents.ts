@@ -2,9 +2,9 @@ import { onUnmounted } from 'vue'
 import { useNuxtApp } from '#app'
 import type { EventPublishResponse } from '../types'
 
-export interface UseRealtimeEventsSubscribeOptions {
+export interface UseRealtimeEventsPublishOptions {
   /**
-   * Whether to receive events that this client published
+   * Whether to also receive this event back on your own subscriptions
    *
    * @default false
    */
@@ -85,7 +85,6 @@ export interface UseRealtimeEventsReturn<TEventMap = Record<string, unknown>> {
       data: K extends keyof TEventMap ? TEventMap[K] : unknown,
       actualChannel?: string,
     ) => void,
-    options?: UseRealtimeEventsSubscribeOptions,
   ) => () => void
 
   /**
@@ -96,7 +95,7 @@ export interface UseRealtimeEventsReturn<TEventMap = Record<string, unknown>> {
   publish: <K extends string & keyof TEventMap>(
     channel: K,
     data: TEventMap[K],
-    options?: UseRealtimeEventsSubscribeOptions,
+    options?: UseRealtimeEventsPublishOptions,
   ) => Promise<void>
 
   /**
@@ -132,8 +131,9 @@ function runMiddleware(
   }
   let index = 0
   const next = () => {
-    if (index < middlewares.length) {
-      middlewares[index++](event, next)
+    const middleware = middlewares[index++]
+    if (middleware) {
+      middleware(event, next)
     }
     else {
       final()
@@ -177,10 +177,12 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
     socket.on('event:received', handleEventReceived)
   }
 
-  const subscribe = <K extends string>(
+  const subscribe = <K extends string & (keyof TEventMap | `${string}:*` | '*')>(
     channel: K,
-    callback: (data: unknown, actualChannel?: string) => void,
-    _subscribeOptions: UseRealtimeEventsSubscribeOptions = {},
+    callback: (
+      data: K extends keyof TEventMap ? TEventMap[K] : unknown,
+      actualChannel?: string,
+    ) => void,
   ): (() => void) => {
     if (!socket) return () => {}
 
@@ -211,10 +213,10 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
     }
   }
 
-  const publish = (
-    channel: string,
-    data: unknown,
-    publishOptions: UseRealtimeEventsSubscribeOptions = {},
+  const publish = <K extends string & keyof TEventMap>(
+    channel: K,
+    data: TEventMap[K],
+    publishOptions: UseRealtimeEventsPublishOptions = {},
   ): Promise<void> => {
     if (!socket) return Promise.resolve()
 
@@ -265,5 +267,5 @@ export function useRealtimeEvents<TEventMap = Record<string, unknown>>(
     subscribe,
     publish,
     unsubscribe,
-  } as unknown as UseRealtimeEventsReturn<TEventMap>
+  }
 }
