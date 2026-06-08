@@ -21,6 +21,8 @@ Drop-in realtime state sync for Nuxt. Implement `useRealtimeState()` and it work
 
 ## Quick Setup
 
+📖 [Full documentation](https://nuxtrealtime.com)
+
 Install the module to your Nuxt application with one command:
 
 ```bash
