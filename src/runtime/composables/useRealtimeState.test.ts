@@ -25,6 +25,18 @@ vi.mock('vue', async () => {
   }
 })
 
+function waitFor(condition: () => boolean, timeout = 2000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeout
+    const check = () => {
+      if (condition()) return resolve()
+      if (Date.now() > deadline) return reject(new Error('waitFor timed out'))
+      setTimeout(check, 10)
+    }
+    check()
+  })
+}
+
 describe('useRealtimeState - Integration', () => {
   let io: Server
   let serverPort: number
@@ -96,8 +108,7 @@ describe('useRealtimeState - Integration', () => {
 
     expect(data.loading.value).toBe(true)
 
-    // Wait for the initial fetch to complete
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     expect(data.loading.value).toBe(false)
     // Since there's no value on server, it should keep the default
@@ -107,36 +118,30 @@ describe('useRealtimeState - Integration', () => {
   it('updates value on the server and receives confirmation', async () => {
     const data = useRealtimeState('test-key-2', 'initial')
 
-    // Wait for initialization
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
-    // Update the value
+    // Update the value — optimistically applied immediately
     data.value = 'updated'
 
-    // Wait for the update to propagate
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    // Value should be optimistically updated
     expect(data.value).toBe('updated')
   })
 
   it('receives updates from other clients', async () => {
     const data = useRealtimeState<string>('shared-key', 'initial')
 
-    // Wait for initialization and subscription
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
-    // Simulate another client updating the value
     const anotherClient = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>((resolve) => {
       anotherClient.on('connect', () => resolve())
     })
 
-    // Update from the other client
-    anotherClient.emit('storage:set', { key: 'shared-key', value: 'from-another-client' })
+    // Await the set ack so we know the server has broadcast storage:updated
+    await new Promise<void>(resolve =>
+      anotherClient.emit('storage:set', { key: 'shared-key', value: 'from-another-client' }, resolve),
+    )
 
-    // Wait for the update to propagate
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await waitFor(() => data.value === 'from-another-client')
 
     expect(data.value).toBe('from-another-client')
 
@@ -145,22 +150,16 @@ describe('useRealtimeState - Integration', () => {
 
   it('fetches existing value from server without default value', async () => {
     // First, set a value on the server
-    await new Promise<void>((resolve) => {
-      clientSocket.emit('storage:set', { key: 'existing-key', value: 'server-value' }, () => {
-        resolve()
-      })
-    })
-
-    // Wait for the value to be set
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise<void>(resolve =>
+      clientSocket.emit('storage:set', { key: 'existing-key', value: 'server-value' }, resolve),
+    )
 
     // Now create a new realtime state without a default value
     const data = useRealtimeState<string>('existing-key')
 
     expect(data.loading.value).toBe(true)
 
-    // Wait for the initial fetch to complete
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     expect(data.loading.value).toBe(false)
     expect(data.value).toBe('server-value')
@@ -168,22 +167,16 @@ describe('useRealtimeState - Integration', () => {
 
   it('server value overrides default value when joining existing channel', async () => {
     // First, set a value on the server
-    await new Promise<void>((resolve) => {
-      clientSocket.emit('storage:set', { key: 'override-key', value: 'server-value' }, () => {
-        resolve()
-      })
-    })
-
-    // Wait for the value to be set
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise<void>(resolve =>
+      clientSocket.emit('storage:set', { key: 'override-key', value: 'server-value' }, resolve),
+    )
 
     // Now create a new realtime state with a default value
     const data = useRealtimeState('override-key', 'default-value')
 
     expect(data.value).toBe('default-value') // Initially has default
 
-    // Wait for the initial fetch to complete
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     expect(data.loading.value).toBe(false)
     // Server value should override the default
@@ -251,7 +244,7 @@ describe('useRealtimeState - debounced sync', () => {
       debounceMs: 100,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     // Rapid consecutive updates
     data.value = 'a'
@@ -278,7 +271,7 @@ describe('useRealtimeState - debounced sync', () => {
       debounceMs: 100,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     data.value = 'first'
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -352,11 +345,12 @@ describe('useRealtimeState - manual sync', () => {
   it('does not sync to server on value change', async () => {
     const data = useRealtimeState('manual-key', 'initial', { sync: 'manual' })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     data.value = 'changed'
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    // Manual sync — give any accidental emit a chance to arrive before asserting
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Local value updated
     expect(data.value).toBe('changed')
@@ -367,7 +361,7 @@ describe('useRealtimeState - manual sync', () => {
   it('marks isDirty when value changes', async () => {
     const data = useRealtimeState('dirty-key', 'initial', { sync: 'manual' })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     expect(data.isDirty.value).toBe(false)
 
@@ -379,14 +373,14 @@ describe('useRealtimeState - manual sync', () => {
   it('syncs to server and clears isDirty when sync() is called', async () => {
     const data = useRealtimeState('sync-call-key', 'initial', { sync: 'manual' })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     data.value = 'updated'
     expect(data.isDirty.value).toBe(true)
 
     data.sync()
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => serverStorage.get('sync-call-key') === 'updated')
 
     expect(serverStorage.get('sync-call-key')).toBe('updated')
     expect(data.isDirty.value).toBe(false)
@@ -395,7 +389,7 @@ describe('useRealtimeState - manual sync', () => {
   it('clears isDirty when server broadcasts an update', async () => {
     const data = useRealtimeState<string>('conflict-key', 'initial', { sync: 'manual' })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => !data.loading.value)
 
     data.value = 'local-change'
     expect(data.isDirty.value).toBe(true)
@@ -404,9 +398,11 @@ describe('useRealtimeState - manual sync', () => {
     const anotherClient = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>(resolve => anotherClient.on('connect', () => resolve()))
 
-    anotherClient.emit('storage:set', { key: 'conflict-key', value: 'server-value' })
+    await new Promise<void>(resolve =>
+      anotherClient.emit('storage:set', { key: 'conflict-key', value: 'server-value' }, resolve),
+    )
 
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await waitFor(() => data.value === 'server-value')
 
     expect(data.value).toBe('server-value')
     expect(data.isDirty.value).toBe(false)

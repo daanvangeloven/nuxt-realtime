@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Server } from 'socket.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
@@ -98,8 +98,9 @@ function createServerInstance(sharedStorage: SharedStorage, instanceId: string) 
       if (callback) callback({ success: true, status: 'ok' })
     })
 
-    socket.on('storage:subscribe', (key: string) => {
+    socket.on('storage:subscribe', (key: string, callback?: () => void) => {
       socket.join(`key:${key}`)
+      callback?.()
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
@@ -166,8 +167,7 @@ describe('cross-server sync - watch callback integration', () => {
 
   it('client on server B receives storage:updated when server A processes a write', async () => {
     // Client B subscribes to key "counter" on server B
-    clientB.emit('storage:subscribe', 'counter')
-    await wait(30)
+    await new Promise<void>(resolve => clientB.emit('storage:subscribe', 'counter', resolve))
 
     const received: unknown[] = []
     clientB.on('storage:updated', (data) => {
@@ -187,9 +187,10 @@ describe('cross-server sync - watch callback integration', () => {
   it('client on server A does not receive a duplicate storage:updated via the watch callback', async () => {
     // Client A and client A2 both subscribe on server A
     const clientA2 = await connectClient(serverA.port)
-    clientA.emit('storage:subscribe', 'counter')
-    clientA2.emit('storage:subscribe', 'counter')
-    await wait(30)
+    await Promise.all([
+      new Promise<void>(resolve => clientA.emit('storage:subscribe', 'counter', resolve)),
+      new Promise<void>(resolve => clientA2.emit('storage:subscribe', 'counter', resolve)),
+    ])
 
     const receivedA: unknown[] = []
     const receivedA2: unknown[] = []
@@ -218,9 +219,10 @@ describe('cross-server sync - watch callback integration', () => {
 
   it('multiple clients on server B all receive the update', async () => {
     const clientB2 = await connectClient(serverB.port)
-    clientB.emit('storage:subscribe', 'shared-key')
-    clientB2.emit('storage:subscribe', 'shared-key')
-    await wait(30)
+    await Promise.all([
+      new Promise<void>(resolve => clientB.emit('storage:subscribe', 'shared-key', resolve)),
+      new Promise<void>(resolve => clientB2.emit('storage:subscribe', 'shared-key', resolve)),
+    ])
 
     const receivedB: unknown[] = []
     const receivedB2: unknown[] = []
@@ -243,8 +245,7 @@ describe('cross-server sync - watch callback integration', () => {
   })
 
   it('updates to _lease: keys do not trigger storage:updated broadcasts', async () => {
-    clientB.emit('storage:subscribe', '_lease:some-key')
-    await wait(30)
+    await new Promise<void>(resolve => clientB.emit('storage:subscribe', '_lease:some-key', resolve))
 
     const received: unknown[] = []
     clientB.on('storage:updated', (data) => {
@@ -296,8 +297,7 @@ describe('cross-server sync - watcher cleanup', () => {
     const serverC = await startServer(sharedStorage, 'instance-c')
 
     const clientC = await connectClient(serverC.port)
-    clientC.emit('storage:subscribe', 'data')
-    await wait(30)
+    await new Promise<void>(resolve => clientC.emit('storage:subscribe', 'data', resolve))
 
     const received: unknown[] = []
     clientC.on('storage:updated', (data) => {
@@ -323,31 +323,5 @@ describe('cross-server sync - watcher cleanup', () => {
     clientC.close()
     await closeServer(serverA)
     await closeServer(serverC)
-  })
-})
-
-describe('cross-server sync - fallback warning', () => {
-  it('logs a warning when the storage driver watch returns a non-function', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    // Simulate what the plugin does when unwatch is not a function
-    const unwatch = null
-
-    if (!unwatch || typeof unwatch !== 'function') {
-      console.warn(
-        '[nuxt-realtime] Storage driver does not support watch. '
-        + 'Cross-server sync is disabled. Updates from other server instances '
-        + 'will only be visible to clients on reconnect/refresh. '
-        + 'Consider using reactiveRedisDriver from nuxt-realtime/drivers/redis.',
-      )
-    }
-
-    expect(warnSpy).toHaveBeenCalledOnce()
-    const [warnMessage] = warnSpy.mock.calls[0] ?? []
-    expect(warnMessage).toContain('[nuxt-realtime]')
-    expect(warnMessage).toContain('Cross-server sync is disabled')
-    expect(warnMessage).toContain('reactiveRedisDriver')
-
-    warnSpy.mockRestore()
   })
 })

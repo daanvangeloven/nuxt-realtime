@@ -34,8 +34,9 @@ describe('useRealtimeEvents - Integration', () => {
 
     // Set up socket.io handlers for events
     io.on('connection', (socket) => {
-      socket.on('event:subscribe', (channel: string) => {
+      socket.on('event:subscribe', (channel: string, callback?: () => void) => {
         socket.join(`event:${channel}`)
+        callback?.()
       })
 
       socket.on('event:unsubscribe', (channel: string) => {
@@ -103,28 +104,24 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData.push(data)
     })
 
-    // Wait for subscription to be processed
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Simulate another client publishing an event
+    // Connect anotherClient — the connection handshake takes longer than the subscribe
+    // round-trip, so clientSocket's subscription is guaranteed to be processed first.
     const anotherClient = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>((resolve) => {
       anotherClient.on('connect', () => resolve())
     })
 
-    // Subscribe to the channel from the other client (to join the room)
-    anotherClient.emit('event:subscribe', 'notifications')
-    await new Promise(resolve => setTimeout(resolve, 50))
+    // Await the publish ack so we know the server has already broadcast event:received
+    await new Promise<void>(resolve =>
+      anotherClient.emit('event:publish', {
+        channel: 'notifications',
+        data: { type: 'info', message: 'Hello!' },
+        includeSelf: false,
+      }, resolve),
+    )
 
-    // Publish from the other client
-    anotherClient.emit('event:publish', {
-      channel: 'notifications',
-      data: { type: 'info', message: 'Hello!' },
-      includeSelf: false,
-    })
-
-    // Wait for the event to propagate
-    await new Promise(resolve => setTimeout(resolve, 100))
+    // Wait for event:received to be delivered to clientSocket
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(receivedData).toHaveLength(1)
     expect(receivedData[0]).toEqual({ type: 'info', message: 'Hello!' })
@@ -135,9 +132,9 @@ describe('useRealtimeEvents - Integration', () => {
   it('publish returns a promise that resolves on server acknowledgment', async () => {
     const events = useRealtimeEvents()
 
-    // Subscribe first so there's a room to publish to
+    // Subscribe first so there's a room to publish to.
+    // Same socket — publish ack guarantees subscribe was processed first.
     events.subscribe('test-channel', () => {})
-    await new Promise(resolve => setTimeout(resolve, 50))
 
     // Publish should resolve without error
     await expect(events.publish('test-channel', { test: 'data' })).resolves.toBeUndefined()
@@ -151,14 +148,9 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData.push(data)
     })
 
-    // Wait for subscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Publish from same client
     await events.publish('self-test', { message: 'self message' })
 
-    // Wait for potential event
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Should NOT receive own event
     expect(receivedData).toHaveLength(0)
@@ -172,14 +164,9 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData.push(data)
     })
 
-    // Wait for subscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Publish with includeSelf
     await events.publish('self-test-include', { message: 'self message' }, { includeSelf: true })
 
-    // Wait for event
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Should receive own event
     expect(receivedData).toHaveLength(1)
@@ -194,31 +181,25 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData.push(data)
     })
 
-    // Wait for subscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Unsubscribe
+    // subscribe + unsubscribe on the same socket are processed in order.
+    // The anotherClient connection handshake takes longer, so by the time it's
+    // connected both operations are guaranteed to be done on the server.
     events.unsubscribe('unsub-test')
 
-    // Wait for unsubscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Simulate event from another client
     const anotherClient = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>((resolve) => {
       anotherClient.on('connect', () => resolve())
     })
 
-    anotherClient.emit('event:subscribe', 'unsub-test')
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise<void>(resolve =>
+      anotherClient.emit('event:publish', {
+        channel: 'unsub-test',
+        data: { message: 'should not receive' },
+        includeSelf: false,
+      }, resolve),
+    )
 
-    anotherClient.emit('event:publish', {
-      channel: 'unsub-test',
-      data: { message: 'should not receive' },
-      includeSelf: false,
-    })
-
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Should NOT receive event after unsubscribe
     expect(receivedData).toHaveLength(0)
@@ -234,31 +215,22 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData.push(data)
     })
 
-    // Wait for subscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Use returned function to unsubscribe
     unsub()
 
-    // Wait for unsubscription
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Try to receive event
     const anotherClient = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>((resolve) => {
       anotherClient.on('connect', () => resolve())
     })
 
-    anotherClient.emit('event:subscribe', 'func-unsub-test')
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise<void>(resolve =>
+      anotherClient.emit('event:publish', {
+        channel: 'func-unsub-test',
+        data: { message: 'should not receive' },
+        includeSelf: false,
+      }, resolve),
+    )
 
-    anotherClient.emit('event:publish', {
-      channel: 'func-unsub-test',
-      data: { message: 'should not receive' },
-      includeSelf: false,
-    })
-
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(receivedData).toHaveLength(0)
 
@@ -278,13 +250,9 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData2.push(data)
     })
 
-    // Wait for subscriptions
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Publish with includeSelf to test locally
     await events.publish('multi-sub', { message: 'to both' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // Both callbacks should receive the event
     expect(receivedData1).toHaveLength(1)
@@ -306,16 +274,12 @@ describe('useRealtimeEvents - Integration', () => {
       receivedData2.push(data)
     })
 
-    // Wait for subscriptions
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     // Unsubscribe first callback
     unsub1()
 
-    // Publish with includeSelf
     await events.publish('partial-unsub', { message: 'only second' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     // First should not receive, second should
     expect(receivedData1).toHaveLength(0)
@@ -335,14 +299,10 @@ describe('useRealtimeEvents - Integration', () => {
       channel2Data.push(data)
     })
 
-    // Wait for subscriptions
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Publish to both channels
     await events.publish('channel-1', { channel: 1 }, { includeSelf: true })
     await events.publish('channel-2', { channel: 2 }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(channel1Data).toHaveLength(1)
     expect(channel1Data[0]).toEqual({ channel: 1 })
@@ -361,12 +321,10 @@ describe('useRealtimeEvents - Integration', () => {
       received.push({ data, channel: actualChannel! })
     })
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
     await events.publish('chat:typing', { userId: '1' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(received).toHaveLength(2)
     expect(received[0]).toEqual({ data: { text: 'hello' }, channel: 'chat:message' })
@@ -381,11 +339,9 @@ describe('useRealtimeEvents - Integration', () => {
     events.subscribe('chat:*', data => chatReceived.push(data))
     events.subscribe('notif:*', data => notifReceived.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(chatReceived).toHaveLength(1)
     expect(notifReceived).toHaveLength(0)
@@ -399,12 +355,10 @@ describe('useRealtimeEvents - Integration', () => {
       received.push({ data, channel: actualChannel! })
     })
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('chat:message', { text: 'hello' }, { includeSelf: true })
     await events.publish('notifications', { msg: 'alert' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(received).toHaveLength(2)
     expect(received.map(r => r.channel)).toEqual(['chat:message', 'notifications'])
@@ -418,11 +372,9 @@ describe('useRealtimeEvents - Integration', () => {
     events.subscribe('chat:message', data => exactReceived.push(data))
     events.subscribe('chat:*', data => wildcardReceived.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('chat:message', { text: 'hi' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(exactReceived).toHaveLength(1)
     expect(wildcardReceived).toHaveLength(1)
@@ -440,11 +392,9 @@ describe('useRealtimeEvents - Integration', () => {
 
     events.subscribe('blocked-channel', data => received.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('blocked-channel', { msg: 'should be blocked' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(received).toHaveLength(0)
   })
@@ -460,11 +410,9 @@ describe('useRealtimeEvents - Integration', () => {
 
     events.subscribe('transform-channel', data => received.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('transform-channel', { original: true }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(received).toHaveLength(1)
     expect(received[0]).toEqual({ original: true, transformed: true })
@@ -487,11 +435,9 @@ describe('useRealtimeEvents - Integration', () => {
 
     events.subscribe('ordered-channel', data => received.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('ordered-channel', { msg: 'test' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(order).toEqual([1, 2])
     expect(received).toHaveLength(1)
@@ -510,11 +456,9 @@ describe('useRealtimeEvents - Integration', () => {
 
     events.subscribe('user:login', data => received.push(data))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
-
     await events.publish('user:login', { userId: 'abc' }, { includeSelf: true })
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(received).toHaveLength(1)
     expect(received[0]).toEqual({ userId: 'abc' })

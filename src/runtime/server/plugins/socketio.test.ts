@@ -245,8 +245,9 @@ function createTestServer() {
       callback?.()
     })
 
-    socket.on('storage:unsubscribe', (key: string) => {
+    socket.on('storage:unsubscribe', (key: string, callback?: () => void) => {
       socket.leave(`key:${key}`)
+      callback?.()
     })
 
     socket.on('storage:heartbeat', (callback?: () => void) => {
@@ -305,8 +306,7 @@ describe('cleanup - lease creation', () => {
   })
 
   it('creates a lease when subscribing to a key', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
 
     expect(storage.has('_lease:room:session-abc')).toBe(true)
     const lease = storage.get('_lease:room:session-abc') as { lastSeen: number }
@@ -314,21 +314,18 @@ describe('cleanup - lease creation', () => {
   })
 
   it('creates a lease when setting a key', async () => {
-    client.emit('storage:set', { key: 'room:session-def', value: { users: [] } })
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:set', { key: 'room:session-def', value: { users: [] } }, resolve))
 
     expect(storage.has('_lease:room:session-def')).toBe(true)
   })
 
   it('updates lastSeen on storage:set', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
 
     const firstSeen = (storage.get('_lease:room:session-abc') as { lastSeen: number }).lastSeen
 
     await wait(20)
-    client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } })
-    await wait(50)
+    await new Promise<void>(resolve => client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve))
 
     const updatedSeen = (storage.get('_lease:room:session-abc') as { lastSeen: number }).lastSeen
     expect(updatedSeen).toBeGreaterThan(firstSeen)
@@ -393,8 +390,7 @@ describe('cleanup - heartbeat', () => {
   it('does not refresh lease for unsubscribed key', async () => {
     await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
 
-    client.emit('storage:unsubscribe', 'room:session-abc')
-    await wait(30)
+    await new Promise<void>(resolve => client.emit('storage:unsubscribe', 'room:session-abc', resolve))
 
     const leaseBefore = (storage.get('_lease:room:session-abc') as { lastSeen: number }).lastSeen
 
@@ -405,95 +401,236 @@ describe('cleanup - heartbeat', () => {
   })
 })
 
-describe('cleanup - job', () => {
-  let io: Server
-  let httpServer: ReturnType<typeof createServer>
-  let storage: Map<string, unknown>
-  let runCleanup: (idleThreshold: number) => void
-  let client: ClientSocket
-  let serverPort: number
+describe('cleanup - job (via plugin)', () => {
+  let setIntervalSpy: ReturnType<typeof vi.spyOn>
+  let capturedCleanupFn: (() => Promise<void>) | null
 
-  beforeEach(async () => {
-    ;({ io, httpServer, storage, runCleanup } = createTestServer())
-    await new Promise<void>(resolve => httpServer.listen(0, () => {
-      serverPort = (httpServer.address() as AddressInfo).port
-      resolve()
+  function createMapStorage() {
+    const data = new Map<string, unknown>()
+    return {
+      data,
+      watch: vi.fn().mockResolvedValue(vi.fn()),
+      setItem: vi.fn().mockImplementation(async (key: string, value: unknown) => { data.set(key, value) }),
+      getItem: vi.fn().mockImplementation(async (key: string) => data.get(key) ?? null),
+      getKeys: vi.fn().mockImplementation(async () => [...data.keys()]),
+      removeItem: vi.fn().mockImplementation(async (key: string) => { data.delete(key) }),
+    }
+  }
+
+  beforeEach(() => {
+    capturedCleanupFn = null
+    vi.resetModules()
+
+    setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback) => {
+      capturedCleanupFn = callback as () => Promise<void>
+      return 999 as unknown as ReturnType<typeof setInterval>
+    })
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
     }))
-    client = await connectClient(serverPort)
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
   })
 
-  afterEach(async () => {
-    client.close()
-    io.close()
-    await new Promise<void>(resolve => httpServer.close(() => resolve()))
+  afterEach(() => {
+    setIntervalSpy.mockRestore()
+    vi.resetModules()
   })
+
+  async function initPlugin(storage: ReturnType<typeof createMapStorage>) {
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: { heartbeatInterval: 30_000, cleanupInterval: 60_000, idleThreshold: 50 },
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {},
+      }),
+      useStorage: () => storage,
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+  }
 
   it('removes stale data key and lease key after idle threshold', async () => {
-    client.emit('storage:subscribe', 'room:session-abc')
-    // Use ack to guarantee the server has processed storage:set before we assert
-    await new Promise<void>(resolve =>
-      client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
-    )
+    const storage = createMapStorage()
+    await initPlugin(storage)
 
-    expect(storage.has('room:session-abc')).toBe(true)
-    expect(storage.has('_lease:room:session-abc')).toBe(true)
+    storage.data.set('room:session-abc', { users: [] })
+    storage.data.set('_lease:room:session-abc', { lastSeen: Date.now() - 200 })
 
-    // Wait past idle threshold then run cleanup
-    await wait(100)
-    runCleanup(50) // lease is now stale
+    await capturedCleanupFn!()
 
-    expect(storage.has('room:session-abc')).toBe(false)
-    expect(storage.has('_lease:room:session-abc')).toBe(false)
+    expect(storage.data.has('room:session-abc')).toBe(false)
+    expect(storage.data.has('_lease:room:session-abc')).toBe(false)
   })
 
-  it('does not remove keys that are within the idle threshold', async () => {
-    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
-    await new Promise<void>(resolve =>
-      client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
-    )
+  it('does not remove keys within the idle threshold', async () => {
+    const storage = createMapStorage()
+    await initPlugin(storage)
 
-    runCleanup(10_000)
+    storage.data.set('room:session-abc', { users: [] })
+    storage.data.set('_lease:room:session-abc', { lastSeen: Date.now() })
 
-    expect(storage.has('room:session-abc')).toBe(true)
-    expect(storage.has('_lease:room:session-abc')).toBe(true)
-  })
+    await capturedCleanupFn!()
 
-  it('keeps keys alive when client sends heartbeats', async () => {
-    await new Promise<void>(resolve => client.emit('storage:subscribe', 'room:session-abc', resolve))
-    await new Promise<void>(resolve =>
-      client.emit('storage:set', { key: 'room:session-abc', value: { users: [] } }, resolve),
-    )
-
-    await new Promise<void>(resolve => client.emit('storage:heartbeat', resolve))
-    runCleanup(50)
-
-    expect(storage.has('room:session-abc')).toBe(true)
-    expect(storage.has('_lease:room:session-abc')).toBe(true)
+    expect(storage.data.has('room:session-abc')).toBe(true)
+    expect(storage.data.has('_lease:room:session-abc')).toBe(true)
   })
 
   it('cleans up multiple stale keys in one pass', async () => {
-    client.emit('storage:set', { key: 'room:session-1', value: { users: [] } })
-    client.emit('storage:set', { key: 'room:session-2', value: { users: [] } })
-    client.emit('storage:set', { key: 'room:session-3', value: { users: [] } })
-    await wait(100)
+    const storage = createMapStorage()
+    await initPlugin(storage)
 
-    runCleanup(50)
+    const staleTime = Date.now() - 200
+    for (const n of [1, 2, 3]) {
+      storage.data.set(`room:session-${n}`, { users: [] })
+      storage.data.set(`_lease:room:session-${n}`, { lastSeen: staleTime })
+    }
 
-    expect(storage.has('room:session-1')).toBe(false)
-    expect(storage.has('room:session-2')).toBe(false)
-    expect(storage.has('room:session-3')).toBe(false)
-    expect(storage.has('_lease:room:session-1')).toBe(false)
-    expect(storage.has('_lease:room:session-2')).toBe(false)
-    expect(storage.has('_lease:room:session-3')).toBe(false)
+    await capturedCleanupFn!()
+
+    for (const n of [1, 2, 3]) {
+      expect(storage.data.has(`room:session-${n}`)).toBe(false)
+      expect(storage.data.has(`_lease:room:session-${n}`)).toBe(false)
+    }
   })
 
   it('only cleans up keys with a lease, leaves unmanaged keys alone', async () => {
-    // Manually insert a key with no lease (e.g. seeded data)
-    storage.set('config:feature-flags', { enabled: true })
-    await wait(100)
+    const storage = createMapStorage()
+    await initPlugin(storage)
 
-    runCleanup(50)
+    storage.data.set('config:feature-flags', { enabled: true })
 
-    expect(storage.has('config:feature-flags')).toBe(true)
+    await capturedCleanupFn!()
+
+    expect(storage.data.has('config:feature-flags')).toBe(true)
+  })
+})
+
+describe('fallback warnings', () => {
+  let warnMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    warnMock = vi.fn()
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: warnMock,
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('warns when storage.watch() returns a non-function', async () => {
+    vi.doMock('nuxt-realtime/drivers/redis', () => ({
+      reactiveRedisDriver: vi.fn().mockReturnValue({}),
+      // Must use a regular function — arrow functions cannot be used with `new`
+      RealtimePubSub: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+        this.instanceId = 'test'
+        this.publish = vi.fn()
+        this.subscribe = vi.fn().mockReturnValue(vi.fn())
+        this.dispose = vi.fn().mockResolvedValue(undefined)
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: { nuxtRealtime: { cleanup: false, logging: { level: null, format: 'text' } } },
+        nuxtRealtime: { redis: {} },
+      }),
+      // Called twice: once without prefix for rootStorage (mount/unmount), once with 'nuxt-realtime'
+      useStorage: vi.fn()
+        .mockReturnValueOnce({
+          mount: vi.fn(),
+          unmount: vi.fn().mockResolvedValue(undefined),
+        })
+        .mockReturnValue({
+          watch: vi.fn().mockResolvedValue(null),
+          setItem: vi.fn(),
+          getItem: vi.fn(),
+          getKeys: vi.fn().mockResolvedValue([]),
+          removeItem: vi.fn(),
+        }),
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('Storage driver does not support watch'))
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('reactiveRedisDriver'))
+    expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining('No Redis pub/sub configured'))
+  })
+
+  it('warns when no Redis pub/sub is configured', async () => {
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: { nuxtRealtime: { cleanup: false, logging: { level: null, format: 'text' } } },
+        nuxtRealtime: {}, // no redis key → pubsub stays null
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()), // valid unwatch → no storage warning
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('No Redis pub/sub configured'))
+    expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('nuxtRealtime.redis'))
+    expect(warnMock).not.toHaveBeenCalledWith(expect.stringContaining('Storage driver does not support watch'))
   })
 })

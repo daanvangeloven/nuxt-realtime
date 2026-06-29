@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Server } from 'socket.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
@@ -310,30 +310,5 @@ describe('cross-server event sync - watcher cleanup', () => {
     clientC.close()
     await closeServer(serverA)
     await closeServer(serverC)
-  })
-})
-
-describe('cross-server event sync - fallback warning', () => {
-  it('logs a warning when no pub/sub is configured', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    // Simulate what the plugin does when pubsub is null
-    const pubsub = null
-    if (!pubsub) {
-      console.warn(
-        '[nuxt-realtime] No Redis pub/sub configured. '
-        + 'Cross-server event sync is disabled. Events published on one server instance '
-        + 'will not reach clients connected to other instances. '
-        + 'Consider configuring Redis via nuxtRealtime.redis in nuxt.config.ts.',
-      )
-    }
-
-    expect(warnSpy).toHaveBeenCalledOnce()
-    const [warnMessage] = warnSpy.mock.calls[0] ?? []
-    expect(warnMessage).toContain('[nuxt-realtime]')
-    expect(warnMessage).toContain('Cross-server event sync is disabled')
-    expect(warnMessage).toContain('nuxtRealtime.redis')
-
-    warnSpy.mockRestore()
   })
 })
