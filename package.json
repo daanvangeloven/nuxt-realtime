@@ -72,8 +72,6 @@
     }
   },
   "devDependencies": {
-    "ioredis": "^5.0.0",
-    "unstorage": "latest",
     "@commitlint/cli": "^20.4.2",
     "@commitlint/config-conventional": "^20.4.2",
     "@nuxt/devtools": "^3.2.2",
@@ -85,9 +83,11 @@
     "changelogen": "^0.6.2",
     "eslint": "^9.39.3",
     "husky": "^9.1.7",
+    "ioredis": "^5.0.0",
     "lint-staged": "^16.2.7",
     "nuxt": "^4.4.7",
     "typescript": "~5.9.3",
+    "unstorage": "latest",
     "vitest": "^4.1.8",
     "vue-tsc": "^3.3.3"
   },
@@ -140,7 +140,16 @@
       "@vue/compiler-dom": "3.5.35",
       "@vue/compiler-sfc": "3.5.35",
       "@vue/reactivity": "3.5.35",
-      "@vue/shared": "3.5.35"
+      "@vue/shared": "3.5.35",
+      "shell-quote@>=1.1.0 <=1.8.3": ">=1.8.4",
+      "esbuild@>=0.27.3 <0.28.1": ">=0.28.1",
+      "launch-editor@<=2.14.0": ">=2.14.1",
+      "js-yaml@<=4.1.1": ">=4.2.0",
+      "@babel/core@<=7.29.0": ">=7.29.6",
+      "dompurify@<3.4.9": ">=3.4.9",
+      "markdown-it@<=14.1.1": ">=14.2.0",
+      "dompurify@<=3.4.10": ">=3.4.11",
+      "linkify-it@<=5.0.0": ">=5.0.1"
     }
   }
 }
