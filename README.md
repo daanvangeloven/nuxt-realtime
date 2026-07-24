@@ -7,21 +7,21 @@
 
 Drop-in realtime state sync for Nuxt. Implement `useRealtimeState()` and it works across all connected clients.
 
-> **🚧 Public Beta**
+> **Public Beta**
 > The API is stable but the module is actively evolving. Early adopters welcome, feedback and contributions are very appreciated!
 
 ## Features
 
-- 🔄 &nbsp;Real-time state synchronization across all connected clients
-- 🎯 &nbsp;Channel-based subscriptions for granular updates
-- 🔌 &nbsp;Built on Socket.IO for reliable WebSocket connections
-- 🎨 &nbsp;Works just like `useState`: no store setup, no manual socket handling
-- 🔐 &nbsp;Auth hooks for socket middleware
-- 🪶 &nbsp;Zero boilerplate
+- Real-time state synchronization across all connected clients
+- Channel-based subscriptions for granular updates
+- Built on Socket.IO for reliable WebSocket connections
+- Works just like `useState`: no store setup, no manual socket handling
+- Auth hooks for socket middleware
+- Zero boilerplate
 
 ## Quick Setup
 
-📖 [Full documentation](https://nuxtrealtime.com)
+[Full documentation](https://nuxtrealtime.com)
 
 Install the module to your Nuxt application with one command:
 
