@@ -3,7 +3,7 @@ import { io } from 'socket.io-client'
 import type { RealtimeSocket } from './types'
 import { useRealtimeLogger } from './composables/useRealtimeLogger'
 
-export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
+export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>((nuxtApp) => {
   const config = useRuntimeConfig()
   const { socketUrl, socketPath, cleanup } = config.public.nuxtRealtime satisfies {
     socketUrl: string | undefined
@@ -18,6 +18,19 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>(() => {
   const socket: RealtimeSocket = io(socketUrl, {
     path: socketPath || '/socket.io',
     autoConnect: true,
+    // Re-invoked by socket.io-client on every (re)connection attempt, so a
+    // registered `nuxt-realtime:auth` hook can supply a fresh/refreshed token
+    // each time rather than one baked in at initial connect.
+    auth: async (cb) => {
+      const ctx = { auth: {} as Record<string, unknown> }
+      try {
+        await nuxtApp.hooks.callHook('nuxt-realtime:auth', ctx)
+      }
+      catch (error) {
+        logger.error('nuxt-realtime:auth hook failed:', error)
+      }
+      cb(ctx.auth)
+    },
   })
 
   socket.on('connect', () => {
