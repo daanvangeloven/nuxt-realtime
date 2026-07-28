@@ -14,7 +14,7 @@ Drop-in realtime state sync for Nuxt. Implement `useRealtimeState()` and it work
 - 📡 &nbsp;Event pub/sub with wildcard channel subscriptions
 - 🎯 &nbsp;Three sync strategies: `immediate`, `debounced`, and `manual`
 - 🔌 &nbsp;Built on Socket.IO for reliable WebSocket connections
-- 🎨 &nbsp;Works just like `useState`: no store setup, no manual socket handling
+- 🎨 &nbsp;Works just like `useState`
 - 🔐 &nbsp;Auth hooks via a Nitro plugin
 - 🏗️ &nbsp;Redis adapter for cross-server state sync in multi-instance deployments
 - 🪶 &nbsp;Zero boilerplate
