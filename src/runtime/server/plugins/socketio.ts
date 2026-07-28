@@ -96,7 +96,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   const STORAGE_PREFIX = 'nuxt-realtime:'
   const unwatch = await storage.watch(async (event, key) => {
     try {
-      if (event !== 'update') return
+      if (event !== 'update' && event !== 'remove') return
       if (!key.startsWith(STORAGE_PREFIX)) return
 
       const relKey = key.slice(STORAGE_PREFIX.length)

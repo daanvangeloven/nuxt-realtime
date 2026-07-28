@@ -75,7 +75,7 @@ function createServerInstance(sharedStorage: SharedStorage, instanceId: string) 
 
   // Mirrors the storage.watch() call in socketio.ts
   const unwatch = sharedStorage.watch(instanceId, (event, key) => {
-    if (event !== 'update') return
+    if (event !== 'update' && event !== 'remove') return
     if (key.startsWith('_lease:')) return
 
     const value = sharedStorage.getItem(key)
@@ -240,6 +240,25 @@ describe('cross-server sync - watch callback integration', () => {
     expect(receivedB2).toHaveLength(1)
 
     clientB2.close()
+  })
+
+  it('client on server B receives storage:updated with null when server A removes a key', async () => {
+    clientB.emit('storage:subscribe', 'counter')
+    await wait(30)
+
+    const received: unknown[] = []
+    clientB.on('storage:updated', (data) => {
+      received.push(data)
+    })
+
+    sharedStorage.setItem('counter', 42, 'instance-a')
+    await wait(30)
+    sharedStorage.removeItem('counter', 'instance-a')
+    await wait(50)
+
+    expect(received).toHaveLength(2)
+    expect(received[0]).toEqual({ key: 'counter', value: 42 })
+    expect(received[1]).toEqual({ key: 'counter', value: null })
   })
 
   it('updates to _lease: keys do not trigger storage:updated broadcasts', async () => {
