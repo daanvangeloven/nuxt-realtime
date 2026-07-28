@@ -96,7 +96,7 @@ const save = draftText.sync
 
 ### Event pub/sub
 
-`useRealtimeEvents` is a lightweight pub/sub layer on top of the WebSocket connection. Use it for one-way broadcasts that don't need shared state — notifications, cursor positions, presence, etc.
+`useRealtimeEvents` is a lightweight pub/sub layer on top of the WebSocket connection. Use it for one-way broadcasts that don't need shared state like notifications, typing indicators, page events etc.
 
 ```vue
 <script setup lang="ts">
