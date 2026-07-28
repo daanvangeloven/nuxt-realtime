@@ -23,7 +23,7 @@ These run in CI on every PR and must pass before merge.
 
 This project follows the [Conventional Commits](https://www.conventionalcommits.org/) specification. All commit messages should be structured as follows:
 
-```
+```text
 <type>(<scope>): <description>
 
 [optional body]
@@ -42,18 +42,11 @@ This project follows the [Conventional Commits](https://www.conventionalcommits.
 - **test**: Adding missing tests or correcting existing tests
 - **chore**: Changes to the build process or auxiliary tools and libraries
 
-### Scopes
-
-- **core**: Core functionality
-- **types**: TypeScript type definitions
-- **docs**: Documentation
-- **deps**: Dependencies
-
 ### Examples
 
 ```bash
 feat(core): add support for custom socket.io configuration
-fix(realtime): resolve subscription memory leak on unmount
+fix(core): resolve subscription memory leak on unmount
 docs(readme): update implementation guide with examples
 chore(deps): upgrade socket.io to v4.6.0
 ```
