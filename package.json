@@ -8,16 +8,10 @@
   },
   "license": "MIT",
   "type": "module",
-  "authors": [
-    {
-      "name": "Jordan van Wijnen",
-      "url": "https://github.com/milkyontheblock/"
-    },
-    {
+  "authors": {
       "name": "Daan van Geloven",
       "url": "https://github.com/daanvangeloven/"
-    }
-  ],
+  },
   "exports": {
     ".": {
       "types": "./dist/types.d.mts",
