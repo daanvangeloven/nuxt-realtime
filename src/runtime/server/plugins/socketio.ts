@@ -60,7 +60,13 @@ export default defineNitroPlugin(async (nitroApp) => {
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
-  const serverOptions = (config as { nuxtRealtime?: { socketio?: { serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio?.serverOptions
+  const socketioConfig = (config as { nuxtRealtime?: { socketio?: { path?: string, serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio
+  const serverOptions = socketioConfig?.serverOptions
+
+  // Must match the client's derivation in plugin.client.ts (`socketPath || '/socket.io'`)
+  // so the handshake path the client connects to is the same one the server listens on.
+  const socketPath = socketioConfig?.path || '/socket.io'
+  const socketRoutePath = socketPath.endsWith('/') ? socketPath : `${socketPath}/`
 
   const io = new Server()
   const engine = new Engine({ ...serverOptions })
@@ -305,7 +311,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   // There currently is no better way to use socket.io with crossws
   // https://socket.io/how-to/use-with-nuxt#hook-the-socketio-server
   // https://github.com/h3js/crossws/issues/138
-  nitroApp.router.use('/socket.io/', defineEventHandler({
+  nitroApp.router.use(socketRoutePath, defineEventHandler({
     handler(event: unknown) {
       const nodeEvent = event as unknown as NodeEvent
       engine.handleRequest(nodeEvent.node.req as Parameters<Engine['handleRequest']>[0], nodeEvent.node.res)

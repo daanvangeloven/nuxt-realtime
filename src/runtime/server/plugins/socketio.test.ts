@@ -80,6 +80,135 @@ describe('serverOptions passthrough', () => {
   })
 })
 
+describe('custom socketio.path', () => {
+  beforeEach(() => {
+    vi.resetModules()
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          socketio: { path: '/ws' },
+        },
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('registers the router at the configured path instead of the hardcoded default', async () => {
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(nitroApp.router.use).toHaveBeenCalledWith('/ws/', expect.anything())
+    expect(nitroApp.router.use).not.toHaveBeenCalledWith('/socket.io/', expect.anything())
+  })
+})
+
+describe('default socketio path', () => {
+  beforeEach(() => {
+    vi.resetModules()
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {},
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('registers the router at /socket.io/ when no path is configured', async () => {
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(nitroApp.router.use).toHaveBeenCalledWith('/socket.io/', expect.anything())
+  })
+})
+
 describe('nuxt-realtime:io hook', () => {
   let EngineMock: ReturnType<typeof vi.fn>
 
