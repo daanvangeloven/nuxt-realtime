@@ -36,6 +36,14 @@ interface PubSubService {
 }
 
 const EVENT_CHANNEL = 'nuxt-realtime:events'
+const LEASE_PREFIX = '_lease:'
+
+/**
+ * Client-supplied storage keys must not reach into the internal `_lease:` namespace
+ */
+function isReservedKey(key: string): boolean {
+  return key.startsWith(LEASE_PREFIX)
+}
 
 /**
  * Returns all Socket.IO room names that should receive an event published to `channel`.
@@ -62,7 +70,13 @@ export default defineNitroPlugin(async (nitroApp) => {
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
-  const serverOptions = (config as { nuxtRealtime?: { socketio?: { serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio?.serverOptions
+  const socketioConfig = (config as { nuxtRealtime?: { socketio?: { path?: string, serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio
+  const serverOptions = socketioConfig?.serverOptions
+
+  // Must match the client's derivation in plugin.client.ts (`socketPath || '/socket.io'`)
+  // so the handshake path the client connects to is the same one the server listens on.
+  const socketPath = socketioConfig?.path || '/socket.io'
+  const socketRoutePath = socketPath.endsWith('/') ? socketPath : `${socketPath}/`
 
   const devtoolsEnabled = realtimePublicConfig.devtoolsEnabled
   const eventLogSize = (config as { nuxtRealtime?: { eventLogSize?: number } }).nuxtRealtime?.eventLogSize
@@ -194,6 +208,10 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
+      if (isReservedKey(key)) {
+        callback(null)
+        return
+      }
       try {
         const value = await storage.getItem(key)
         callback(value)
@@ -205,6 +223,12 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:set', async ({ key, value }, callback) => {
+      if (isReservedKey(key)) {
+        if (callback) {
+          callback({ success: false, error: 'Key is reserved for internal use' })
+        }
+        return
+      }
       try {
         await storage.setItem(key, value)
         await touchLease(key)
@@ -230,6 +254,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:subscribe', async (key: string) => {
+      if (isReservedKey(key)) return
       socket.join(`key:${key}`)
       record('storage:subscribe', socket.id, key)
       try {
@@ -241,6 +266,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
+      if (isReservedKey(key)) return
       socket.leave(`key:${key}`)
       record('storage:unsubscribe', socket.id, key)
     })
@@ -333,7 +359,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   // There currently is no better way to use socket.io with crossws
   // https://socket.io/how-to/use-with-nuxt#hook-the-socketio-server
   // https://github.com/h3js/crossws/issues/138
-  nitroApp.router.use('/socket.io/', defineEventHandler({
+  nitroApp.router.use(socketRoutePath, defineEventHandler({
     handler(event: unknown) {
       const nodeEvent = event as unknown as NodeEvent
       engine.handleRequest(nodeEvent.node.req as Parameters<Engine['handleRequest']>[0], nodeEvent.node.res)

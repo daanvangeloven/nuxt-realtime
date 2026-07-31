@@ -68,6 +68,7 @@ declare module '@nuxt/schema' {
     nuxtRealtime: {
       redis?: ReactiveRedisDriverOptions
       socketio?: {
+        path?: string
         serverOptions?: ServerOptions
       }
       eventLogSize?: number
@@ -268,6 +269,9 @@ export default defineNuxtModule<ModuleOptions>({
     nuxt.options.runtimeConfig.nuxtRealtime = {
       redis: options.redis,
       socketio: {
+        // Shared with the client (`runtimeConfig.public.nuxtRealtime.socketPath`) so the
+        // server route registration and client connection always agree on the same path.
+        path: options.socketio?.path,
         serverOptions: options.socketio?.serverOptions,
       },
       eventLogSize: options.devtools === false ? 200 : (options.devtools?.eventLogSize ?? 200),
