@@ -27,4 +27,30 @@ A new `nuxt-realtime:io` Nitro hook exposes the Socket.IO `Server` before any co
 
 See the [Authentication docs](/getting-started/authentication) for details.
 
+## Redis Cluster support
+
+The Redis driver now accepts a `cluster` option, so `reactiveRedisDriver()` can talk to a Redis Cluster instead of a single node:
+
+```ts
+import { reactiveRedisDriver } from 'nuxt-realtime/drivers/redis'
+
+export default defineNuxtConfig({
+  nuxtRealtime: {
+    storage: reactiveRedisDriver({
+      cluster: [{ host: 'redis-1', port: 6379 }, { host: 'redis-2', port: 6379 }],
+    }),
+  },
+})
+```
+
+See the [configuration docs](/getting-started/configuration) for details.
+
+## Configurable Socket.IO path
+
+`socketio.path` lets you move the Socket.IO endpoint off the `/socket.io` default (useful behind a reverse proxy that already owns that path). The client and server now derive the same path from this single option.
+
+## Fixes
+
+- Client-supplied storage keys can no longer read or write the internal `_lease:` namespace used for storage expiry.
+
 
