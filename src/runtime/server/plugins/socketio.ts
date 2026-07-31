@@ -5,6 +5,8 @@ import { Server as Engine, type ServerOptions } from 'engine.io'
 import { Server } from 'socket.io'
 import { defineEventHandler } from 'h3'
 import { createRealtimeLogger } from '../utils/logger'
+import { claimLock, getLockOwner, getLockOwnerInfo, releaseLock, touchLease } from '../utils/lock'
+import type { LockClaimPayload, LockReleasePayload } from '../../types'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
 // but Engine.IO requires them. These interfaces document the internal properties we rely on.
@@ -81,10 +83,6 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
 
   const storage = useStorage('nuxt-realtime')
-
-  async function touchLease(key: string) {
-    await storage.setItem(`_lease:${key}`, { lastSeen: Date.now() })
-  }
 
   // Cross-server sync: watch for writes from other server instances and broadcast
   // to locally subscribed Socket.IO clients. Drivers that don't support native
@@ -171,6 +169,8 @@ export default defineNitroPlugin(async (nitroApp) => {
   io.on('connection', (socket) => {
     logger.debug('Client connected:', socket.id)
 
+    const ownedLocks = new Set<string>()
+
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
       try {
@@ -186,7 +186,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     socket.on('storage:set', async ({ key, value }, callback) => {
       try {
         await storage.setItem(key, value)
-        await touchLease(key)
+        await touchLease(storage, key)
         socket.to(`key:${key}`).emit('storage:updated', { key, value })
 
         if (callback) {
@@ -210,7 +210,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     socket.on('storage:subscribe', async (key: string) => {
       socket.join(`key:${key}`)
       try {
-        await touchLease(key)
+        await touchLease(storage, key)
       }
       catch (error) {
         logger.error('Lease touch error on subscribe:', error)
@@ -223,12 +223,90 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     socket.on('storage:heartbeat', async () => {
       try {
-        // Touch leases for all keys this socket is subscribed to
+        // Touch leases for all keys this socket is subscribed to, plus any locks it holds
         const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
-        await Promise.all(storageRooms.map(room => touchLease(room.slice('key:'.length))))
+        await Promise.all([
+          ...storageRooms.map(room => touchLease(storage, room.slice('key:'.length))),
+          ...[...ownedLocks].map(key => touchLease(storage, `_lock:${key}`)),
+        ])
       }
       catch (error) {
         logger.error('Heartbeat error:', error)
+      }
+    })
+
+    // Lock operations
+    socket.on('lock:claim', async ({ key, ownerInfo }: LockClaimPayload, callback) => {
+      try {
+        const owner = socket.id
+        const owned = await claimLock(storage, key, owner, ownerInfo)
+        if (owned) {
+          ownedLocks.add(key)
+          socket.to(`lock:${key}`).emit('lock:changed', { key, owner, ownerInfo: ownerInfo ?? null })
+        }
+        if (callback) {
+          callback({ success: true, owned })
+        }
+      }
+      catch (error) {
+        logger.error('Lock claim error:', error)
+        if (callback) {
+          callback({ success: false, owned: false, error: 'Error while claiming lock' })
+        }
+      }
+    })
+
+    socket.on('lock:release', async ({ key, changed }: LockReleasePayload, callback) => {
+      try {
+        const released = await releaseLock(storage, key, socket.id)
+        if (released) {
+          ownedLocks.delete(key)
+          socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null, changed: changed ?? false })
+        }
+        if (callback) {
+          callback({ success: released })
+        }
+      }
+      catch (error) {
+        logger.error('Lock release error:', error)
+        if (callback) {
+          callback({ success: false, error: 'Error while releasing lock' })
+        }
+      }
+    })
+
+    socket.on('lock:subscribe', async (key: string, callback) => {
+      socket.join(`lock:${key}`)
+      try {
+        const owner = await getLockOwner(storage, key)
+        const ownerInfo = owner ? await getLockOwnerInfo(storage, key) : null
+        if (callback) {
+          callback({ key, owner, ownerInfo })
+        }
+      }
+      catch (error) {
+        logger.error('Lock subscribe error:', error)
+        if (callback) {
+          callback({ key, owner: null, ownerInfo: null })
+        }
+      }
+    })
+
+    socket.on('lock:unsubscribe', (key: string) => {
+      socket.leave(`lock:${key}`)
+    })
+
+    socket.on('disconnect', async () => {
+      try {
+        await Promise.all([...ownedLocks].map(async (key) => {
+          const released = await releaseLock(storage, key, socket.id)
+          if (released) {
+            socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null })
+          }
+        }))
+      }
+      catch (error) {
+        logger.error('Lock release on disconnect error:', error)
       }
     })
 

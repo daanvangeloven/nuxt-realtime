@@ -1,9 +1,36 @@
-import type { Driver, WatchCallback } from 'unstorage'
+import type { WatchCallback } from 'unstorage'
+import { joinKeys } from 'unstorage'
 import redisDriver from 'unstorage/drivers/redis'
 import { Redis } from 'ioredis'
 import type { ConsolaInstance } from 'consola'
+import type { LockCapableDriver } from '../runtime/server/utils/lock'
 
 const STORAGE_CHANNEL = 'nuxt-realtime:watch'
+
+// CAS scripts run on the `pub` connection (see RealtimePubSub below): `sub` is a dedicated
+// subscriber connection and Redis restricts subscriber connections to pub/sub commands.
+const CLAIM_LOCK_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current == false or current == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[1])
+  return 1
+end
+return 0
+`
+
+const RELEASE_LOCK_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+`
+
+interface RedisWithLockCommands extends Redis {
+  claimLock: (key: string, owner: string) => Promise<number>
+  releaseLock: (key: string, owner: string) => Promise<number>
+}
 
 export interface ReactiveRedisDriverOptions {
   /**
@@ -76,12 +103,25 @@ export class RealtimePubSub {
     this.pub = createRedisClient(opts)
     this.sub = createRedisClient(opts)
 
+    this.pub.defineCommand('claimLock', { numberOfKeys: 1, lua: CLAIM_LOCK_SCRIPT })
+    this.pub.defineCommand('releaseLock', { numberOfKeys: 1, lua: RELEASE_LOCK_SCRIPT })
+
     this.sub.on('message', (channel, message) => {
       const channelHandlers = this.handlers.get(channel)
       if (channelHandlers) {
         for (const handler of channelHandlers) handler(message)
       }
     })
+  }
+
+  async claimLock(key: string, owner: string): Promise<boolean> {
+    const result = await (this.pub as RedisWithLockCommands).claimLock(key, owner)
+    return result === 1
+  }
+
+  async releaseLock(key: string, owner: string): Promise<boolean> {
+    const result = await (this.pub as RedisWithLockCommands).releaseLock(key, owner)
+    return result === 1
   }
 
   async publish(channel: string, data: unknown) {
@@ -129,9 +169,10 @@ export class RealtimePubSub {
  * })
  * ```
  */
-export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driver {
+export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): LockCapableDriver {
   const { pubsub: externalPubSub, logger, ...baseOpts } = opts
   const base = redisDriver(baseOpts)
+  const toRedisKey = (key: string) => joinKeys(baseOpts.base ?? '', key)
 
   const pubsub = externalPubSub ?? new RealtimePubSub(opts)
   const ownsPubSub = !externalPubSub
@@ -173,6 +214,14 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
       return () => {
         listeners.delete(callback)
       }
+    },
+
+    async claimLock(key, owner) {
+      return pubsub.claimLock(toRedisKey(key), owner)
+    },
+
+    async releaseLock(key, owner) {
+      return pubsub.releaseLock(toRedisKey(key), owner)
     },
 
     async dispose() {

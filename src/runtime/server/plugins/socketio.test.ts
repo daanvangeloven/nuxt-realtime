@@ -228,6 +228,8 @@ function createTestServer() {
   const io = new Server(httpServer)
 
   io.on('connection', (socket) => {
+    const ownedLocks = new Set<string>()
+
     socket.on('storage:get', (key: string, callback) => {
       callback(storage.get(key) ?? null)
     })
@@ -252,7 +254,65 @@ function createTestServer() {
     socket.on('storage:heartbeat', (callback?: () => void) => {
       const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
       storageRooms.forEach(room => touchLease(room.slice(4)))
+      ownedLocks.forEach(key => touchLease(`_lock:${key}`))
       callback?.()
+    })
+
+    // Lock operations — mirrors the claimLock/releaseLock fallback logic from lock.ts,
+    // re-implemented against the plain Map so this stays self-contained like the rest of the file.
+    socket.on('lock:claim', (
+      { key, ownerInfo }: { key: string, ownerInfo?: unknown },
+      callback?: (response: { success: boolean, owned: boolean }) => void,
+    ) => {
+      const lockKey = `_lock:${key}`
+      const current = storage.get(lockKey) as { owner: string } | undefined
+      const owned = !current || current.owner === socket.id
+      if (owned) {
+        storage.set(lockKey, { owner: socket.id })
+        storage.set(`_lockinfo:${key}`, ownerInfo ?? null)
+        touchLease(lockKey)
+        ownedLocks.add(key)
+        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: socket.id, ownerInfo: ownerInfo ?? null })
+      }
+      callback?.({ success: true, owned })
+    })
+
+    socket.on('lock:release', (
+      { key, changed }: { key: string, changed?: boolean },
+      callback?: (response: { success: boolean }) => void,
+    ) => {
+      const lockKey = `_lock:${key}`
+      const current = storage.get(lockKey) as { owner: string } | undefined
+      const released = current?.owner === socket.id
+      if (released) {
+        storage.delete(lockKey)
+        storage.delete(`_lockinfo:${key}`)
+        ownedLocks.delete(key)
+        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null, changed: changed ?? false })
+      }
+      callback?.({ success: released })
+    })
+
+    socket.on('lock:subscribe', (key: string, callback?: (state: { key: string, owner: string | null, ownerInfo: unknown }) => void) => {
+      socket.join(`lock:${key}`)
+      const current = storage.get(`_lock:${key}`) as { owner: string } | undefined
+      const ownerInfo = current ? (storage.get(`_lockinfo:${key}`) ?? null) : null
+      callback?.({ key, owner: current?.owner ?? null, ownerInfo })
+    })
+
+    socket.on('lock:unsubscribe', (key: string) => {
+      socket.leave(`lock:${key}`)
+    })
+
+    // Releases any locks still held when the socket goes away — mirrors the disconnect
+    // handler in socketio.ts.
+    socket.on('disconnect', () => {
+      ownedLocks.forEach((key) => {
+        storage.delete(`_lock:${key}`)
+        storage.delete(`_lockname:${key}`)
+        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null })
+      })
+      ownedLocks.clear()
     })
   })
 
@@ -495,5 +555,215 @@ describe('cleanup - job', () => {
     runCleanup(50)
 
     expect(storage.has('config:feature-flags')).toBe(true)
+  })
+})
+
+describe('lock handlers', () => {
+  let io: Server
+  let httpServer: ReturnType<typeof createServer>
+  let storage: Map<string, unknown>
+  let clientA: ClientSocket
+  let clientB: ClientSocket
+  let serverPort: number
+
+  beforeEach(async () => {
+    ;({ io, httpServer, storage } = createTestServer())
+    await new Promise<void>(resolve => httpServer.listen(0, () => {
+      serverPort = (httpServer.address() as AddressInfo).port
+      resolve()
+    }))
+    clientA = await connectClient(serverPort)
+    clientB = await connectClient(serverPort)
+  })
+
+  afterEach(async () => {
+    clientA.close()
+    clientB.close()
+    io.close()
+    await new Promise<void>(resolve => httpServer.close(() => resolve()))
+  })
+
+  it('claim succeeds and reports owned:true when the lock is free', async () => {
+    const response = await new Promise<{ success: boolean, owned: boolean }>(resolve =>
+      clientA.emit('lock:claim', { key: 'doc-1' }, resolve),
+    )
+
+    expect(response).toEqual({ success: true, owned: true })
+    expect(storage.get('_lock:doc-1')).toEqual({ owner: clientA.id })
+  })
+
+  it('claim by the same client is idempotent', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const response = await new Promise<{ success: boolean, owned: boolean }>(resolve =>
+      clientA.emit('lock:claim', { key: 'doc-1' }, resolve),
+    )
+
+    expect(response.owned).toBe(true)
+  })
+
+  it('claim by another client fails while the lock is held', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const response = await new Promise<{ success: boolean, owned: boolean }>(resolve =>
+      clientB.emit('lock:claim', { key: 'doc-1' }, resolve),
+    )
+
+    expect(response).toEqual({ success: true, owned: false })
+    expect(storage.get('_lock:doc-1')).toEqual({ owner: clientA.id })
+  })
+
+  it('release by a non-owner fails and leaves the lock held', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const response = await new Promise<{ success: boolean }>(resolve =>
+      clientB.emit('lock:release', { key: 'doc-1' }, resolve),
+    )
+
+    expect(response).toEqual({ success: false })
+    expect(storage.get('_lock:doc-1')).toEqual({ owner: clientA.id })
+  })
+
+  it('release by the owner succeeds and frees the lock for others', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const releaseResponse = await new Promise<{ success: boolean }>(resolve =>
+      clientA.emit('lock:release', { key: 'doc-1' }, resolve),
+    )
+    expect(releaseResponse).toEqual({ success: true })
+    expect(storage.has('_lock:doc-1')).toBe(false)
+
+    const claimResponse = await new Promise<{ success: boolean, owned: boolean }>(resolve =>
+      clientB.emit('lock:claim', { key: 'doc-1' }, resolve),
+    )
+    expect(claimResponse).toEqual({ success: true, owned: true })
+  })
+
+  it('broadcasts lock:changed to subscribers when a lock is claimed', async () => {
+    await new Promise<void>(resolve => clientB.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    const received: unknown[] = []
+    clientB.on('lock:changed', data => received.push(data))
+
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    await wait(30)
+
+    expect(received).toEqual([{ key: 'doc-1', owner: clientA.id, ownerInfo: null }])
+  })
+
+  it('broadcasts the owner info passed to claim, and returns it via subscribe', async () => {
+    const received: unknown[] = []
+    clientB.on('lock:changed', data => received.push(data))
+    await new Promise<void>(resolve => clientB.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1', ownerInfo: 'Alice' }, () => resolve()))
+    await wait(30)
+
+    expect(received).toEqual([{ key: 'doc-1', owner: clientA.id, ownerInfo: 'Alice' }])
+
+    const state = await new Promise<{ key: string, owner: string | null, ownerInfo: unknown }>(resolve =>
+      clientB.emit('lock:subscribe', 'doc-1', resolve),
+    )
+    expect(state).toEqual({ key: 'doc-1', owner: clientA.id, ownerInfo: 'Alice' })
+  })
+
+  it('round-trips an arbitrary JSON-serializable owner info shape', async () => {
+    const aliceInfo = { name: 'Alice', avatarUrl: '/alice.png' }
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1', ownerInfo: aliceInfo }, () => resolve()))
+
+    const state = await new Promise<{ key: string, owner: string | null, ownerInfo: unknown }>(resolve =>
+      clientB.emit('lock:subscribe', 'doc-1', resolve),
+    )
+    expect(state).toEqual({ key: 'doc-1', owner: clientA.id, ownerInfo: aliceInfo })
+  })
+
+  it('broadcasts lock:changed with a null owner when a lock is released', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    await new Promise<void>(resolve => clientB.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    const received: unknown[] = []
+    clientB.on('lock:changed', data => received.push(data))
+
+    await new Promise<void>(resolve => clientA.emit('lock:release', { key: 'doc-1' }, () => resolve()))
+    await wait(30)
+
+    expect(received).toEqual([{ key: 'doc-1', owner: null, changed: false }])
+  })
+
+  it('forwards changed:true from release to the lock:changed broadcast', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    await new Promise<void>(resolve => clientB.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    const received: unknown[] = []
+    clientB.on('lock:changed', data => received.push(data))
+
+    await new Promise<void>(resolve => clientA.emit('lock:release', { key: 'doc-1', changed: true }, () => resolve()))
+    await wait(30)
+
+    expect(received).toEqual([{ key: 'doc-1', owner: null, changed: true }])
+  })
+
+  it('subscribe returns the current owner without side effects', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+
+    const state = await new Promise<{ key: string, owner: string | null }>(resolve =>
+      clientB.emit('lock:subscribe', 'doc-1', resolve),
+    )
+
+    expect(state).toEqual({ key: 'doc-1', owner: clientA.id, ownerInfo: null })
+    // Subscribing must not have claimed the lock for clientB
+    expect(storage.get('_lock:doc-1')).toEqual({ owner: clientA.id })
+  })
+
+  it('subscribe reports owner:null for a lock that has never been claimed', async () => {
+    const state = await new Promise<{ key: string, owner: string | null }>(resolve =>
+      clientB.emit('lock:subscribe', 'never-claimed', resolve),
+    )
+
+    expect(state).toEqual({ key: 'never-claimed', owner: null, ownerInfo: null })
+  })
+
+  it('refreshes the lock lease on heartbeat so a held lock is not reaped as idle', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const firstSeen = (storage.get('_lease:_lock:doc-1') as { lastSeen: number }).lastSeen
+
+    const beforeHeartbeat = Date.now()
+    await new Promise<void>(resolve => clientA.emit('storage:heartbeat', resolve))
+
+    expect((storage.get('_lease:_lock:doc-1') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(beforeHeartbeat)
+    expect((storage.get('_lease:_lock:doc-1') as { lastSeen: number }).lastSeen).toBeGreaterThanOrEqual(firstSeen)
+  })
+
+  it('does not refresh lock leases for locks this client does not own', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    const leaseBefore = (storage.get('_lease:_lock:doc-1') as { lastSeen: number }).lastSeen
+
+    await new Promise<void>(resolve => clientB.emit('storage:heartbeat', resolve))
+
+    expect((storage.get('_lease:_lock:doc-1') as { lastSeen: number }).lastSeen).toBe(leaseBefore)
+  })
+
+  it('releases a held lock and notifies subscribers when the owner disconnects', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:claim', { key: 'doc-1' }, () => resolve()))
+    await new Promise<void>(resolve => clientB.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    const received: unknown[] = []
+    clientB.on('lock:changed', data => received.push(data))
+
+    clientA.close()
+    await wait(30)
+
+    expect(storage.has('_lock:doc-1')).toBe(false)
+    expect(received).toEqual([{ key: 'doc-1', owner: null }])
+
+    const claimResponse = await new Promise<{ success: boolean, owned: boolean }>(resolve =>
+      clientB.emit('lock:claim', { key: 'doc-1' }, resolve),
+    )
+    expect(claimResponse).toEqual({ success: true, owned: true })
+  })
+
+  it('does not touch storage on disconnect when the client owns no locks', async () => {
+    await new Promise<void>(resolve => clientA.emit('lock:subscribe', 'doc-1', () => resolve()))
+
+    clientA.close()
+    await wait(30)
+
+    expect(storage.has('_lock:doc-1')).toBe(false)
   })
 })

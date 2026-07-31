@@ -29,10 +29,40 @@ export interface EventPublishPayload {
   includeSelf: boolean
 }
 
+export interface LockClaimResponse {
+  success: boolean
+  owned: boolean
+  error?: string
+}
+
+export interface LockReleaseResponse {
+  success: boolean
+  error?: string
+}
+
+export interface LockClaimPayload {
+  key: string
+  ownerInfo?: unknown
+}
+
+export interface LockReleasePayload {
+  key: string
+  /** Whether the release follows an actual value change, vs. e.g. abandoning an edit. */
+  changed?: boolean
+}
+
+export interface LockChangedPayload {
+  key: string
+  owner: string | null
+  ownerInfo?: unknown
+  changed?: boolean
+}
+
 // Socket event maps
 export interface ServerToClientEvents {
   'storage:updated': (data: StorageUpdatePayload) => void
   'event:received': (data: EventReceivedPayload) => void
+  'lock:changed': (data: LockChangedPayload) => void
 }
 
 export interface ClientToServerEvents {
@@ -44,6 +74,10 @@ export interface ClientToServerEvents {
   'event:subscribe': (channel: string) => void
   'event:unsubscribe': (channel: string) => void
   'event:publish': (data: EventPublishPayload, callback: (response: EventPublishResponse) => void) => void
+  'lock:claim': (data: LockClaimPayload, callback: (response: LockClaimResponse) => void) => void
+  'lock:release': (data: LockReleasePayload, callback: (response: LockReleaseResponse) => void) => void
+  'lock:subscribe': (key: string, callback: (state: LockChangedPayload) => void) => void
+  'lock:unsubscribe': (key: string) => void
 }
 
 export type RealtimeSocket = Socket<ServerToClientEvents, ClientToServerEvents>
