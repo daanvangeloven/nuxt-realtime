@@ -5,4 +5,7 @@ export default defineConfig({
     'import.meta.client': true,
     'import.meta.server': false,
   },
+  test: {
+    exclude: ['**/node_modules/**', '**/.git/**', '**/dist/**'],
+  },
 })

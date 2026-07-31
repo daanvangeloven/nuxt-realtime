@@ -4,6 +4,7 @@
     "dist",
     "node_modules",
     "playground",
-    "docs"
+    "docs",
+    "client"
   ]
 }
