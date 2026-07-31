@@ -80,6 +80,135 @@ describe('serverOptions passthrough', () => {
   })
 })
 
+describe('custom socketio.path', () => {
+  beforeEach(() => {
+    vi.resetModules()
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          socketio: { path: '/ws' },
+        },
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('registers the router at the configured path instead of the hardcoded default', async () => {
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(nitroApp.router.use).toHaveBeenCalledWith('/ws/', expect.anything())
+    expect(nitroApp.router.use).not.toHaveBeenCalledWith('/socket.io/', expect.anything())
+  })
+})
+
+describe('default socketio path', () => {
+  beforeEach(() => {
+    vi.resetModules()
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {},
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('registers the router at /socket.io/ when no path is configured', async () => {
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(nitroApp.router.use).toHaveBeenCalledWith('/socket.io/', expect.anything())
+  })
+})
+
 describe('nuxt-realtime:io hook', () => {
   let EngineMock: ReturnType<typeof vi.fn>
 
@@ -182,7 +311,7 @@ describe('nuxt-realtime:io hook', () => {
   })
 })
 
-describe('nuxt-realtime:io hook — middleware runs before connection', () => {
+describe('nuxt-realtime:io hook: middleware runs before connection', () => {
   it('middleware registered via io.use() executes before the connection handler', async () => {
     const httpServer = createServer()
     const io = new Server(httpServer)
@@ -765,5 +894,281 @@ describe('lock handlers', () => {
     await wait(30)
 
     expect(storage.has('_lock:doc-1')).toBe(false)
+  })
+})
+
+describe('storage handlers reject reserved _lease: keys', () => {
+  let storageMock: {
+    watch: ReturnType<typeof vi.fn>
+    setItem: ReturnType<typeof vi.fn>
+    getItem: ReturnType<typeof vi.fn>
+    getKeys: ReturnType<typeof vi.fn>
+    removeItem: ReturnType<typeof vi.fn>
+  }
+  let connectionHandler: ((socket: unknown) => void) | undefined
+  let handlers: Record<string, (...args: unknown[]) => unknown>
+  let fakeSocket: { join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
+
+  beforeEach(async () => {
+    vi.resetModules()
+
+    storageMock = {
+      watch: vi.fn().mockResolvedValue(vi.fn()),
+      setItem: vi.fn(),
+      getItem: vi.fn(),
+      getKeys: vi.fn().mockResolvedValue([]),
+      removeItem: vi.fn(),
+    }
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn((event: string, cb: (socket: unknown) => void) => {
+        if (event === 'connection') connectionHandler = cb
+      })
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+      getQuery: vi.fn(() => ({})),
+      createError: vi.fn((opts: { statusMessage: string }) => new Error(opts.statusMessage)),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+            devtoolsEnabled: false,
+          },
+        },
+        nuxtRealtime: {},
+      }),
+      useStorage: () => storageMock,
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    handlers = {}
+    fakeSocket = {
+      id: 'socket-abc',
+      rooms: new Set(['socket-abc']),
+      join: vi.fn(),
+      leave: vi.fn(),
+      to: vi.fn().mockReturnValue({ emit: vi.fn() }),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+        handlers[event] = handler
+      }),
+    }
+    connectionHandler!(fakeSocket)
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('storage:get ignores a _lease:-prefixed key and returns null', async () => {
+    const callback = vi.fn()
+    await handlers['storage:get']!('_lease:some-other-key', callback)
+
+    expect(storageMock.getItem).not.toHaveBeenCalled()
+    expect(callback).toHaveBeenCalledWith(null)
+  })
+
+  it('storage:set rejects a _lease:-prefixed key via the ack callback', async () => {
+    const callback = vi.fn()
+    await handlers['storage:set']!({ key: '_lease:some-other-key', value: { lastSeen: 0 } }, callback)
+
+    expect(storageMock.setItem).not.toHaveBeenCalled()
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({ success: false }))
+  })
+
+  it('storage:subscribe ignores a _lease:-prefixed key', async () => {
+    await handlers['storage:subscribe']!('_lease:some-other-key')
+
+    expect(fakeSocket.join).not.toHaveBeenCalled()
+    expect(storageMock.setItem).not.toHaveBeenCalled()
+  })
+
+  it('storage:unsubscribe ignores a _lease:-prefixed key', () => {
+    handlers['storage:unsubscribe']!('_lease:some-other-key')
+
+    expect(fakeSocket.leave).not.toHaveBeenCalled()
+  })
+
+  it('still allows ordinary keys through', async () => {
+    const callback = vi.fn()
+    await handlers['storage:set']!({ key: 'room:session-abc', value: { users: [] } }, callback)
+
+    expect(storageMock.setItem).toHaveBeenCalledWith('room:session-abc', { users: [] })
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({ success: true }))
+  })
+})
+
+describe('devtools instrumentation', () => {
+  function mockCommonDependencies(devtoolsEnabled: boolean) {
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn((handler: unknown) => handler),
+      getQuery: vi.fn(() => ({})),
+      createError: vi.fn((opts: { statusMessage: string }) => new Error(opts.statusMessage)),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+            devtoolsEnabled,
+          },
+        },
+        nuxtRealtime: { eventLogSize: 50 },
+      }),
+      useStorage: () => ({
+        watch: vi.fn().mockResolvedValue(vi.fn()),
+        setItem: vi.fn(),
+        getItem: vi.fn(),
+        getKeys: vi.fn().mockResolvedValue([]),
+        removeItem: vi.fn(),
+      }),
+    }))
+  }
+
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('sets devtoolsState.io to the socket.io server when devtools is enabled', async () => {
+    mockCommonDependencies(true)
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    const { default: pluginFactory } = await import('./socketio')
+    const { devtoolsState } = await import('../utils/devtools-state')
+
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(devtoolsState.io).not.toBeNull()
+  })
+
+  it('leaves devtoolsState.io unset when devtools is disabled', async () => {
+    mockCommonDependencies(false)
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn()
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    const { default: pluginFactory } = await import('./socketio')
+    const { devtoolsState } = await import('../utils/devtools-state')
+
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(devtoolsState.io).toBeNull()
+  })
+
+  it('records connect, storage:subscribe, storage:set, and disconnect events', async () => {
+    mockCommonDependencies(true)
+
+    let connectionHandler: ((socket: unknown) => void) | undefined
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn((event: string, cb: (socket: unknown) => void) => {
+        if (event === 'connection') connectionHandler = cb
+      })
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      return { Server: IoServer }
+    })
+
+    const { default: pluginFactory } = await import('./socketio')
+    const { devtoolsState } = await import('../utils/devtools-state')
+
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+
+    expect(connectionHandler).toBeTypeOf('function')
+
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    const fakeSocket = {
+      id: 'socket-abc',
+      rooms: new Set(['socket-abc']),
+      join: vi.fn(),
+      leave: vi.fn(),
+      to: vi.fn().mockReturnValue({ emit: vi.fn() }),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+        handlers[event] = handler
+      }),
+    }
+
+    connectionHandler!(fakeSocket)
+
+    // 'connect' is recorded synchronously as part of the connection handler.
+    expect(devtoolsState.eventLog.list().some(e => e.type === 'connect' && e.socketId === 'socket-abc')).toBe(true)
+
+    handlers['storage:subscribe']!('counter')
+    handlers['storage:set']!({ key: 'counter', value: 1 }, undefined)
+    await wait(10)
+    handlers['disconnect']!('client disconnect')
+
+    const entries = devtoolsState.eventLog.list()
+    expect(entries.some(e => e.type === 'storage:subscribe' && e.detail === 'counter')).toBe(true)
+    expect(entries.some(e => e.type === 'storage:set' && e.detail === 'counter')).toBe(true)
+    expect(entries.some(e => e.type === 'disconnect' && e.detail === 'client disconnect')).toBe(true)
   })
 })

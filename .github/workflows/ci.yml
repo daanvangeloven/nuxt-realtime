@@ -47,5 +47,8 @@ jobs:
       - name: Build module
         run: pnpm nuxt-module-build build --stub && pnpm nuxt-module-build prepare
 
+      - name: Prepare client
+        run: pnpm nuxi prepare client
+
       - name: Test
         run: pnpm run test
