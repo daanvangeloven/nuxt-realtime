@@ -170,5 +170,19 @@ describe('lock - generic fallback (memory driver, no claimLock/releaseLock suppo
     it('returns an empty array when the owner holds nothing', async () => {
       await expect(getLocksOwnedBy(storage, 'alice')).resolves.toEqual([])
     })
+
+    it('no longer lists a key after it is released', async () => {
+      await claimLock(storage, 'doc-1', 'alice')
+      await releaseLock(storage, 'doc-1', 'alice')
+      await expect(getLocksOwnedBy(storage, 'alice')).resolves.toEqual([])
+    })
+
+    it('a lock claimed and released by a second owner is not still listed under the first', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { ttl: 20 })
+      await wait(30) // let alice's ttl lapse
+      await claimLock(storage, 'doc-1', 'bob')
+      await expect(getLocksOwnedBy(storage, 'alice')).resolves.toEqual([])
+      await expect(getLocksOwnedBy(storage, 'bob')).resolves.toEqual(['doc-1'])
+    })
   })
 })

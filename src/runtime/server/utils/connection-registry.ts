@@ -10,7 +10,7 @@ export interface ConnectionRecord {
 export interface ConnectionRegistry {
   /** Registers a brand-new connectionId (no prior entry). */
   register: (connectionId: string, socketId: string, info?: unknown) => Promise<void>
-  /** Remaps an existing entry (active or stale) to a new socketId and clears staleness. Returns false if no entry existed. */
+  /** Remaps a stale entry to a new socketId and clears staleness. Returns false if no entry existed or the entry is still active (owned by a live connection). */
   reclaim: (connectionId: string, socketId: string) => Promise<boolean>
   lookup: (connectionId: string) => Promise<ConnectionRecord | null>
   /** Marks a connection as disconnected, starting its grace period. Storage write only, no timer. */
@@ -33,7 +33,9 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
 
     async reclaim(connectionId, socketId) {
       const existing = await storage.getItem<ConnectionRecord>(PREFIX + connectionId)
-      if (!existing) return false
+      // A connectionId is client-supplied, so a live (non-stale) record belongs to a socket
+      // that's still connected: refuse to hand its identity to a different socket.
+      if (!existing || existing.staleAt === null) return false
       await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { ...existing, socketId, staleAt: null })
       return true
     },

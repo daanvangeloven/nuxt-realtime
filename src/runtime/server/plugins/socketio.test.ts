@@ -1338,6 +1338,42 @@ describe('lock features: connectionId, rooms, ttl, meta, forceRelease', () => {
     await expect(storage.getItem('_lock:doc-1')).resolves.toBeNull()
   })
 
+  it('claim rejects a non-string key instead of coercing it into a storage key', async () => {
+    const { socket } = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await socket.handlers['lock:claim']![0]!({ key: { evil: true } }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, owned: false, error: 'Invalid lock:claim payload' })
+    await expect(storage.getItem('_lock:[object Object]')).resolves.toBeNull()
+  })
+
+  it('claim rejects a negative ttl', async () => {
+    const { socket } = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await socket.handlers['lock:claim']![0]!({ key: 'doc-1', ttl: -5 }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, owned: false, error: 'Invalid lock:claim payload' })
+  })
+
+  it('refuses to let a second live socket steal an active connectionId, falling back to socket.id instead', async () => {
+    const first = await connect('socket-a', 'conn-1')
+    await first.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    // A different, still-connected socket shows up claiming the same connectionId
+    // (e.g. a forged/duplicated handshake). It must not take over conn-1's identity.
+    const second = await connect('socket-b', 'conn-1')
+    const secondCallback = vi.fn()
+    await second.socket.handlers['lock:claim']![0]!({ key: 'doc-2' }, secondCallback)
+    expect(secondCallback).toHaveBeenCalledWith({ success: true, owned: true })
+    // Falls back to socket.id, not conn-1, as the owner.
+    await expect(storage.getItem('_lock:doc-2')).resolves.toEqual({ owner: 'socket-b' })
+
+    // The original socket still owns its lock under conn-1 and can release it normally.
+    const releaseCallback = vi.fn()
+    await first.socket.handlers['lock:release']![0]!({ key: 'doc-1' }, releaseCallback)
+    expect(releaseCallback).toHaveBeenCalledWith({ success: true })
+  })
+
   it('calls nuxt-realtime:identify with the connectionId and socket, without vetoing the connection', async () => {
     const seen: unknown[] = []
     hookHandlers['nuxt-realtime:identify'] = [(ctx: unknown) => {
@@ -1780,6 +1816,18 @@ describe('rooms', () => {
   it('nuxt-realtime:canJoinRoom denies by setting ctx.allow = false', async () => {
     hookHandlers['nuxt-realtime:canJoinRoom'] = [(ctx: { allow: boolean }) => {
       ctx.allow = false
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await a.socket.handlers['room:join']![0]!('project-42', callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, error: 'Not allowed to join this room' })
+  })
+
+  it('nuxt-realtime:canJoinRoom fails closed (denies) when the registered hook throws', async () => {
+    hookHandlers['nuxt-realtime:canJoinRoom'] = [() => {
+      throw new Error('boom')
     }]
 
     const a = await connect('socket-a', 'conn-1')

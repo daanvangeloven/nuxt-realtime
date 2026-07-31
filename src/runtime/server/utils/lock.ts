@@ -78,6 +78,24 @@ async function tagRoom(storage: Storage, key: string, room: string): Promise<voi
   await storage.setItem(`_lockroom:${key}`, room)
 }
 
+// Same one-key-per-owner reverse index as tagRoom/untagRoom above, so getLocksOwnedBy() can
+// look up a owner's locks by prefix instead of scanning every key in storage.
+async function untagOwner(storage: Storage, key: string): Promise<void> {
+  const owner = await storage.getItem<string>(`_lockowner:${key}`)
+  if (!owner) return
+  await storage.removeItem(`_ownerlocks:${owner}:${key}`)
+  await storage.removeItem(`_lockowner:${key}`)
+}
+
+async function tagOwner(storage: Storage, key: string, owner: string): Promise<void> {
+  const previousOwner = await storage.getItem<string>(`_lockowner:${key}`)
+  if (previousOwner && previousOwner !== owner) {
+    await untagOwner(storage, key)
+  }
+  await storage.setItem(`_ownerlocks:${owner}:${key}`, true)
+  await storage.setItem(`_lockowner:${key}`, owner)
+}
+
 /**
  * Atomic (on a CAS-capable driver, e.g. Redis) compare-and-set claim of `key` by `claimant`,
  * the pure primitive `claimLock` builds on. Exposed so other features that need a real "only
@@ -109,6 +127,7 @@ export async function claimLock(storage: Storage, key: string, owner: string, ow
   if (claimed) {
     await touchLease(storage, lockKey)
     await storage.setItem(`_lockinfo:${key}`, ownerInfo ?? null)
+    await tagOwner(storage, key, owner)
     if (opts.room) {
       await tagRoom(storage, key, opts.room)
     }
@@ -127,9 +146,14 @@ export async function releaseLock(storage: Storage, key: string, owner: string):
     ? await driver.releaseLock(relativeKey, owner)
     : await releaseLockFallback(storage, lockKey, owner)
 
-  if (released) {
+  // Also clean up bookkeeping when the lock already expired on its own (native TTL or lazy
+  // fallback expiry) rather than being explicitly released: otherwise the owner index and
+  // stale info/room tags from that claim would never get cleared.
+  const indexedOwner = await storage.getItem<string>(`_lockowner:${key}`)
+  if (released || indexedOwner === owner) {
     await storage.removeItem(`_lockinfo:${key}`)
     await untagRoom(storage, key)
+    await untagOwner(storage, key)
   }
   return released
 }
@@ -182,14 +206,7 @@ export async function getRoomKeys(storage: Storage, room: string): Promise<strin
  * an immediate disconnect when no connectionId was supplied.
  */
 export async function getLocksOwnedBy(storage: Storage, owner: string): Promise<string[]> {
-  const allKeys = await storage.getKeys()
-  const owned: string[] = []
-  for (const lockKey of allKeys) {
-    if (!lockKey.startsWith('_lock:')) continue
-    const key = lockKey.slice('_lock:'.length)
-    if (await getLockOwner(storage, key) === owner) {
-      owned.push(key)
-    }
-  }
-  return owned
+  const prefix = `_ownerlocks:${owner}:`
+  const keys = await storage.getKeys(prefix)
+  return keys.map(k => k.slice(prefix.length))
 }

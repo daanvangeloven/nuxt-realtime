@@ -59,6 +59,13 @@ describe('ConnectionRegistry', () => {
     await expect(registry.lookup('conn-1')).resolves.toBeNull()
   })
 
+  it('reclaim on a still-active connectionId returns false and does not steal it from the live socket', async () => {
+    await registry.register('conn-1', 'socket-a', { name: 'Alice' })
+
+    await expect(registry.reclaim('conn-1', 'socket-b')).resolves.toBe(false)
+    await expect(registry.lookup('conn-1')).resolves.toEqual({ socketId: 'socket-a', info: { name: 'Alice' }, staleAt: null })
+  })
+
   it('isGraceExpired is false while active (staleAt null)', async () => {
     await registry.register('conn-1', 'socket-a')
     const record = await registry.lookup('conn-1')

@@ -50,6 +50,17 @@ function isReservedKey(key: string): boolean {
   return key.startsWith(LEASE_PREFIX)
 }
 
+// Lock/presence/room keys are interpolated straight into storage keys (e.g. `_lock:${key}`),
+// so a non-string payload (an object, a number, undefined) would silently collide unrelated
+// locks/rooms instead of erroring. Guard the trust boundary the same way storage:set does.
+function isValidKey(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isValidTtl(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+}
+
 /**
  * Returns all Socket.IO room names that should receive an event published to `channel`.
  * Includes the exact channel room, all namespace-prefix wildcard rooms, and the global wildcard room.
@@ -220,7 +231,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // socket.id. It's the stable identity used for both lock ownership and presence
     // membership so a refresh/reconnect doesn't drop either. Opt-in: falls back to socket.id
     // when absent (in which case there's no reconnect-grace behavior, see disconnect below).
-    const connectionId = socket.handshake?.auth?.connectionId as string | undefined
+    let connectionId = socket.handshake?.auth?.connectionId as string | undefined
     if (connectionId) {
       const identifyCtx = { connectionId, socket, info: {} as Record<string, unknown> }
       try {
@@ -231,7 +242,17 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       const reclaimed = await registry.reclaim(connectionId, socket.id)
       if (!reclaimed) {
-        await registry.register(connectionId, socket.id, identifyCtx.info)
+        // Either unclaimed (fresh id) or still owned by a different, live socket. In the
+        // latter case registering over it would hijack that connection's identity, so treat
+        // the supplied connectionId as unusable and fall back to socket.id instead.
+        const existing = await registry.lookup(connectionId)
+        if (existing) {
+          logger.warn(`connectionId "${connectionId}" is already in use by an active connection; falling back to socket.id for this connection`)
+          connectionId = undefined
+        }
+        else {
+          await registry.register(connectionId, socket.id, identifyCtx.info)
+        }
       }
     }
     const identity = connectionId ?? socket.id
@@ -258,6 +279,9 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       catch (error) {
         logger.error('nuxt-realtime:canJoinRoom hook failed:', error)
+        // A registered hook that throws is a bug in the host app, not "no hook registered":
+        // fail closed rather than silently falling through to the allow-by-default behavior.
+        ctx.allow = false
       }
       if (!ctx.allow) return false
 
@@ -351,6 +375,10 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     // Lock operations
     socket.on('lock:claim', async ({ key, ownerInfo, room, ttl }: LockClaimPayload, callback) => {
+      if (!isValidKey(key) || (room !== undefined && !isValidKey(room)) || !isValidTtl(ttl)) {
+        if (callback) callback({ success: false, owned: false, error: 'Invalid lock:claim payload' })
+        return
+      }
       try {
         if (room && !(await ensureRoomMembership(room))) {
           if (callback) {
@@ -378,6 +406,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('lock:release', async ({ key, changed, meta }: LockReleasePayload, callback) => {
+      if (!isValidKey(key)) {
+        if (callback) callback({ success: false, error: 'Invalid lock:release payload' })
+        return
+      }
       try {
         const room = await getLockRoom(storage, key)
         const released = await releaseLock(storage, key, identity)
@@ -444,6 +476,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('lock:forceRelease', async ({ key }: { key: string }, callback) => {
+      if (!isValidKey(key)) {
+        if (callback) callback({ success: false, error: 'Invalid lock:forceRelease payload' })
+        return
+      }
       try {
         const currentOwner = await getLockOwner(storage, key)
         const ctx = { key, connectionId, currentOwner, allow: false }
@@ -476,6 +512,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Presence operations: "who's currently in room X", independent of whether they hold a
     // lock. Reuses the same opaque room string locks tag with; no new grouping concept.
     socket.on('presence:join', async ({ room, info }: PresenceJoinPayload, callback) => {
+      if (!isValidKey(room)) {
+        if (callback) callback({ success: false, error: 'Invalid presence:join payload' })
+        return
+      }
       try {
         if (!(await ensureRoomMembership(room))) {
           if (callback) callback({ success: false, error: 'Not allowed to join this room' })
@@ -494,6 +534,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('presence:leave', async ({ room }: { room: string }, callback) => {
+      if (!isValidKey(room)) {
+        if (callback) callback({ success: false, error: 'Invalid presence:leave payload' })
+        return
+      }
       try {
         const existed = await leavePresence(storage, room, identity)
         presenceRooms.delete(room)
@@ -525,6 +569,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     // do implicitly via ensureRoomMembership. Scopes state/events client-side (see
     // useRealtimeRoom); server-side it's purely membership + lifecycle hooks + auth.
     socket.on('room:join', async (roomId: string, callback) => {
+      if (!isValidKey(roomId)) {
+        if (callback) callback({ success: false, error: 'Invalid room:join payload' })
+        return
+      }
       try {
         const allowed = await ensureRoomMembership(roomId)
         if (callback) {
@@ -538,6 +586,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('room:leave', async (roomId: string, callback) => {
+      if (!isValidKey(roomId)) {
+        if (callback) callback({ success: false, error: 'Invalid room:leave payload' })
+        return
+      }
       try {
         const { left, nowEmpty } = await leaveRoom(storage, roomId, identity)
         joinedRooms.delete(roomId)

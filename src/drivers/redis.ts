@@ -189,7 +189,7 @@ export class RealtimePubSub {
  *
  * @example
  * ```ts
- * // nuxt.config.ts, Redis Cluster in production
+ * // nuxt.config.ts with Redis Cluster in production
  * import { reactiveRedisDriver } from 'nuxt-realtime/drivers/redis'
  *
  * export default defineNuxtConfig({
