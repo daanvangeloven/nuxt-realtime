@@ -29,6 +29,30 @@ declare module 'nitropack' {
   }
 }
 
+declare module '#app' {
+  interface RuntimeNuxtHooks {
+    /**
+     * Called before every connection attempt (including reconnects). Mutate
+     * `ctx.auth` to attach data to the Socket.IO handshake, read on the server
+     * via `socket.handshake.auth` inside a `nuxt-realtime:io` middleware.
+     *
+     * Runs again on every reconnect, so a fresh/refreshed token can be supplied
+     * each time rather than baked in once at connect time.
+     *
+     * @example
+     * ```ts
+     * // plugins/realtime-auth.client.ts
+     * export default defineNuxtPlugin((nuxtApp) => {
+     *   nuxtApp.hook('nuxt-realtime:auth', (ctx) => {
+     *     ctx.auth.token = useAuthToken().value
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:auth': (ctx: { auth: Record<string, unknown> }) => void | Promise<void>
+  }
+}
+
 declare module '@nuxt/schema' {
   interface PublicRuntimeConfig {
     nuxtRealtime: {
@@ -36,6 +60,7 @@ declare module '@nuxt/schema' {
       socketPath: string | undefined
       cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
       logging: { level: string | undefined, format: string }
+      devtoolsEnabled: boolean
     }
   }
 
@@ -46,6 +71,7 @@ declare module '@nuxt/schema' {
         path?: string
         serverOptions?: ServerOptions
       }
+      eventLogSize?: number
     }
   }
 }
@@ -171,6 +197,21 @@ export interface ModuleOptions {
    * ```
    */
   logging?: LoggingOptions
+
+  /**
+   * Configures the "Realtime" Nuxt DevTools tab (connections, storage keys,
+   * event log). Only ever active in development. Set to `false` to disable.
+   *
+   * @default {}
+   */
+  devtools?: {
+    /**
+     * Max number of recent events kept in the in-memory event log shown in
+     * the DevTools tab.
+     * @default 200
+     */
+    eventLogSize?: number
+  } | false
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -179,7 +220,7 @@ export default defineNuxtModule<ModuleOptions>({
     configKey: 'nuxtRealtime',
   },
   defaults: {},
-  setup(options, nuxt) {
+  async setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
 
     if (options.redis && options.storage) {
@@ -211,6 +252,8 @@ export default defineNuxtModule<ModuleOptions>({
           ...options.cleanup,
         }
 
+    const devtoolsEnabled = options.devtools !== false && nuxt.options.dev
+
     // TODO: add warning if no ws server url is provided and nitro websockets aren't enabled
     nuxt.options.runtimeConfig.public.nuxtRealtime = {
       socketUrl: options.socketio?.serverUrl, // undefined = same origin
@@ -220,6 +263,7 @@ export default defineNuxtModule<ModuleOptions>({
         level: options.logging?.level, // undefined = auto (debug in dev, warn in prod)
         format: options.logging?.format ?? 'pretty',
       },
+      devtoolsEnabled,
     }
 
     nuxt.options.runtimeConfig.nuxtRealtime = {
@@ -230,6 +274,7 @@ export default defineNuxtModule<ModuleOptions>({
         path: options.socketio?.path,
         serverOptions: options.socketio?.serverOptions,
       },
+      eventLogSize: options.devtools === false ? 200 : (options.devtools?.eventLogSize ?? 200),
     }
 
     // Add server plugin for socket.io initialization
@@ -240,5 +285,10 @@ export default defineNuxtModule<ModuleOptions>({
 
     // Add composables for auto-import
     addImportsDir(resolver.resolve('./runtime/composables'))
+
+    if (devtoolsEnabled) {
+      const { setupDevtoolsTab } = await import('./devtools/setup')
+      setupDevtoolsTab(nuxt, resolver)
+    }
   },
 })
