@@ -4,7 +4,7 @@ import { RealtimePubSub } from './redis'
 
 vi.mock('ioredis', () => {
   function client() {
-    return { on: vi.fn(), publish: vi.fn(), subscribe: vi.fn(), disconnect: vi.fn() }
+    return { on: vi.fn(), publish: vi.fn(), subscribe: vi.fn(), disconnect: vi.fn(), defineCommand: vi.fn() }
   }
   const RedisMock = Object.assign(vi.fn(client), { Cluster: vi.fn(client) })
   return { Redis: RedisMock }

@@ -1144,7 +1144,7 @@ describe('devtools instrumentation', () => {
 
     expect(connectionHandler).toBeTypeOf('function')
 
-    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    const handlers: Record<string, ((...args: unknown[]) => unknown)[]> = {}
     const fakeSocket = {
       id: 'socket-abc',
       rooms: new Set(['socket-abc']),
@@ -1152,7 +1152,7 @@ describe('devtools instrumentation', () => {
       leave: vi.fn(),
       to: vi.fn().mockReturnValue({ emit: vi.fn() }),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
-        handlers[event] = handler
+        (handlers[event] ??= []).push(handler)
       }),
     }
 
@@ -1161,10 +1161,10 @@ describe('devtools instrumentation', () => {
     // 'connect' is recorded synchronously as part of the connection handler.
     expect(devtoolsState.eventLog.list().some(e => e.type === 'connect' && e.socketId === 'socket-abc')).toBe(true)
 
-    handlers['storage:subscribe']!('counter')
-    handlers['storage:set']!({ key: 'counter', value: 1 }, undefined)
+    handlers['storage:subscribe']![0]!('counter')
+    handlers['storage:set']![0]!({ key: 'counter', value: 1 }, undefined)
     await wait(10)
-    handlers['disconnect']!('client disconnect')
+    handlers['disconnect']!.forEach(h => h('client disconnect'))
 
     const entries = devtoolsState.eventLog.list()
     expect(entries.some(e => e.type === 'storage:subscribe' && e.detail === 'counter')).toBe(true)
