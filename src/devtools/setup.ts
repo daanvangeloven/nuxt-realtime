@@ -23,9 +23,7 @@ export function setupDevtoolsTab(nuxt: Nuxt, resolver: Resolver): void {
 
   // Serves the prebuilt client SPA. No vite-dev-server proxy for hot-reloading
   // the tab UI mid-development: `client/dist` is always prebuilt (see
-  // `build:devtools-client` in package.json). ponytail: if iterating on the
-  // tab UI becomes painful, the upgrade path is a dev-mode proxy to a
-  // `vite dev` server for `client/` instead of serving the static build.
+  // `build:devtools-client` in package.json)
   nuxt.hook('vite:serverCreated', (server, { isClient }) => {
     if (!isClient) return
     server.middlewares.use(TAB_STATIC_PATH, sirv(clientDist, { single: true, dev: true }))
