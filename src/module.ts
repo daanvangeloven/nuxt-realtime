@@ -29,6 +29,30 @@ declare module 'nitropack' {
   }
 }
 
+declare module '#app' {
+  interface RuntimeNuxtHooks {
+    /**
+     * Called before every connection attempt (including reconnects). Mutate
+     * `ctx.auth` to attach data to the Socket.IO handshake, read on the server
+     * via `socket.handshake.auth` inside a `nuxt-realtime:io` middleware.
+     *
+     * Runs again on every reconnect, so a fresh/refreshed token can be supplied
+     * each time rather than baked in once at connect time.
+     *
+     * @example
+     * ```ts
+     * // plugins/realtime-auth.client.ts
+     * export default defineNuxtPlugin((nuxtApp) => {
+     *   nuxtApp.hook('nuxt-realtime:auth', (ctx) => {
+     *     ctx.auth.token = useAuthToken().value
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:auth': (ctx: { auth: Record<string, unknown> }) => void | Promise<void>
+  }
+}
+
 declare module '@nuxt/schema' {
   interface PublicRuntimeConfig {
     nuxtRealtime: {
