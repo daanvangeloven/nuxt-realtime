@@ -1,6 +1,6 @@
 import { ref, onUnmounted, readonly, type Ref } from 'vue'
 import { useNuxtApp } from '#app'
-import type { LockChangedPayload, LockClaimResponse, LockReleaseResponse } from '../types'
+import type { LockChangedPayload, LockClaimResponse, LockForceReleaseResponse, LockReleaseResponse } from '../types'
 import { useRealtimeLogger } from './useRealtimeLogger'
 
 export interface UseRealtimeLockOptions<TOwnerInfo> {
@@ -8,6 +8,17 @@ export interface UseRealtimeLockOptions<TOwnerInfo> {
    * Info about this client to show others while it holds the lock (e.g. `{ name, avatarUrl }`)
    */
   ownerInfo?: TOwnerInfo
+
+  /**
+   * Opaque group tag for bulk presence via useRealtimeLockRoom. Not a route/URL concept.
+   */
+  room?: string
+
+  /**
+   * Auto-release after this many ms of being held, regardless of activity.
+   * Omitted = the module-level `lock.defaultTtl` (if any), 0 = never expires.
+   */
+  ttl?: number
 
   /**
    * Called whenever the lock becomes free
@@ -26,8 +37,15 @@ export interface UseRealtimeLockReturn<TOwnerInfo> {
    *
    * `options.changed` - whether the release follows an actual value change, so other
    * clients' `onReleased` can distinguish that from abandoning an edit.
+   * `options.meta` - opaque app data (e.g. a diff) relayed verbatim to other clients' `onReleased`-adjacent `lock:changed`.
    */
-  release: (options?: { changed?: boolean }) => Promise<void>
+  release: (options?: { changed?: boolean, meta?: unknown }) => Promise<void>
+
+  /**
+   * Forcibly releases the lock regardless of who holds it. Denied unless the server has a
+   * `nuxt-realtime:canForceRelease` hook registered that allows it.
+   */
+  forceRelease: () => Promise<boolean>
 
   /**
    * Whether this client currently owns the lock.
@@ -48,7 +66,9 @@ export interface UseRealtimeLockReturn<TOwnerInfo> {
 const ACK_TIMEOUT = 5000
 
 export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRealtimeLockOptions<TOwnerInfo> = {}): UseRealtimeLockReturn<TOwnerInfo> {
-  const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
+  const nuxtApp = import.meta.client ? useNuxtApp() : null
+  const socket = nuxtApp?.$realtimeSocket ?? null
+  const connectionId = nuxtApp?.$realtimeConnectionId ?? null
   const logger = import.meta.client ? useRealtimeLogger() : null
 
   const locked = ref(false)
@@ -57,7 +77,7 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
 
   const applyState = (owner: string | null, info: TOwnerInfo | null = null) => {
     locked.value = owner !== null
-    ownedByMe.value = owner !== null && owner === socket?.id
+    ownedByMe.value = owner !== null && owner === connectionId?.value
     ownerInfo.value = owner !== null ? info : null
   }
 
@@ -86,7 +106,7 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
     return new Promise((resolve) => {
       socket
         .timeout(ACK_TIMEOUT)
-        .emit('lock:claim', { key, ownerInfo: options.ownerInfo }, (err: Error, response: LockClaimResponse) => {
+        .emit('lock:claim', { key, ownerInfo: options.ownerInfo, room: options.room, ttl: options.ttl }, (err: Error, response: LockClaimResponse) => {
           if (err || !response?.success) {
             logger?.error('Failed to claim lock:', err || response?.error)
             resolve(false)
@@ -100,12 +120,12 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
     })
   }
 
-  const release = (releaseOptions?: { changed?: boolean }): Promise<void> => {
+  const release = (releaseOptions?: { changed?: boolean, meta?: unknown }): Promise<void> => {
     if (!socket) return Promise.resolve()
     return new Promise((resolve) => {
       socket
         .timeout(ACK_TIMEOUT)
-        .emit('lock:release', { key, changed: releaseOptions?.changed ?? false }, (err: Error, response: LockReleaseResponse) => {
+        .emit('lock:release', { key, changed: releaseOptions?.changed ?? false, meta: releaseOptions?.meta }, (err: Error, response: LockReleaseResponse) => {
           if (err || !response?.success) {
             logger?.error('Failed to release lock:', err || response?.error)
           }
@@ -115,6 +135,25 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
             ownerInfo.value = null
           }
           resolve()
+        })
+    })
+  }
+
+  const forceRelease = (): Promise<boolean> => {
+    if (!socket) return Promise.resolve(false)
+    return new Promise((resolve) => {
+      socket
+        .timeout(ACK_TIMEOUT)
+        .emit('lock:forceRelease', { key }, (err: Error, response: LockForceReleaseResponse) => {
+          if (err || !response?.success) {
+            logger?.error('Failed to force-release lock:', err || response?.error)
+            resolve(false)
+            return
+          }
+          locked.value = false
+          ownedByMe.value = false
+          ownerInfo.value = null
+          resolve(true)
         })
     })
   }
@@ -133,6 +172,7 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
   return {
     claim,
     release,
+    forceRelease,
     ownedByMe: readonly(ownedByMe),
     locked: readonly(locked),
     ownerInfo: readonly(ownerInfo) as Readonly<Ref<TOwnerInfo | null>>,

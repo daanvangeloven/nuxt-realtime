@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createStorage, prefixStorage, type Storage } from 'unstorage'
 import memoryDriver from 'unstorage/drivers/memory'
-import { claimLock, releaseLock, getLockOwner, getLockOwnerInfo } from './lock'
+import { claimLock, releaseLock, getLockOwner, getLockOwnerInfo, getLockRoom, getRoomKeys, getLocksOwnedBy } from './lock'
+
+function wait(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 // Mirrors how the plugin obtains its storage: a root storage with a dedicated
 // "nuxt-realtime" mount, accessed through a prefixed view (see useStorage('nuxt-realtime')
@@ -95,5 +99,76 @@ describe('lock - generic fallback (memory driver, no claimLock/releaseLock suppo
     await claimLock(storage, 'doc-1', 'alice', 'Alice')
     await releaseLock(storage, 'doc-1', 'bob') // fails, alice still owns it
     await expect(getLockOwnerInfo(storage, 'doc-1')).resolves.toBe('Alice')
+  })
+
+  describe('ttl', () => {
+    it('claims are unbounded when no ttl is given', async () => {
+      await claimLock(storage, 'doc-1', 'alice')
+      await wait(20)
+      await expect(claimLock(storage, 'doc-1', 'bob')).resolves.toBe(false)
+    })
+
+    it('a different owner can claim once the ttl lapses', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { ttl: 20 })
+      await expect(claimLock(storage, 'doc-1', 'bob')).resolves.toBe(false)
+      await wait(30)
+      await expect(claimLock(storage, 'doc-1', 'bob')).resolves.toBe(true)
+      await expect(getLockOwner(storage, 'doc-1')).resolves.toBe('bob')
+    })
+
+    it('getLockOwner reports an expired lock as free without a claim attempt', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { ttl: 20 })
+      await wait(30)
+      await expect(getLockOwner(storage, 'doc-1')).resolves.toBeNull()
+    })
+  })
+
+  describe('room', () => {
+    it('tags a lock with a room and lists it via getRoomKeys', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { room: 'project-42' })
+      await expect(getRoomKeys(storage, 'project-42')).resolves.toEqual(['doc-1'])
+      await expect(getLockRoom(storage, 'doc-1')).resolves.toBe('project-42')
+    })
+
+    it('accumulates multiple keys tagged with the same room', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { room: 'project-42' })
+      await claimLock(storage, 'doc-2', 'bob', undefined, { room: 'project-42' })
+      await expect(getRoomKeys(storage, 'project-42')).resolves.toEqual(['doc-1', 'doc-2'])
+    })
+
+    it('removes the key from the room index on release', async () => {
+      await claimLock(storage, 'doc-1', 'alice', undefined, { room: 'project-42' })
+      await releaseLock(storage, 'doc-1', 'alice')
+      await expect(getRoomKeys(storage, 'project-42')).resolves.toEqual([])
+      await expect(getLockRoom(storage, 'doc-1')).resolves.toBeNull()
+    })
+
+    it('does not tag a room when none is given', async () => {
+      await claimLock(storage, 'doc-1', 'alice')
+      await expect(getLockRoom(storage, 'doc-1')).resolves.toBeNull()
+    })
+
+    it('concurrent claims into the same room do not clobber each other (each membership is its own key, not a shared array)', async () => {
+      await Promise.all([
+        claimLock(storage, 'doc-1', 'alice', undefined, { room: 'project-42' }),
+        claimLock(storage, 'doc-2', 'bob', undefined, { room: 'project-42' }),
+        claimLock(storage, 'doc-3', 'carol', undefined, { room: 'project-42' }),
+      ])
+      const keys = await getRoomKeys(storage, 'project-42')
+      expect(keys.sort()).toEqual(['doc-1', 'doc-2', 'doc-3'])
+    })
+  })
+
+  describe('getLocksOwnedBy', () => {
+    it('returns only the keys currently held by the given owner', async () => {
+      await claimLock(storage, 'doc-1', 'alice')
+      await claimLock(storage, 'doc-2', 'alice')
+      await claimLock(storage, 'doc-3', 'bob')
+      await expect(getLocksOwnedBy(storage, 'alice')).resolves.toEqual(['doc-1', 'doc-2'])
+    })
+
+    it('returns an empty array when the owner holds nothing', async () => {
+      await expect(getLocksOwnedBy(storage, 'alice')).resolves.toEqual([])
+    })
   })
 })

@@ -8,9 +8,11 @@ import { useRealtimeLock } from './useRealtimeLock'
 
 // Mock Nuxt app
 let clientSocket: ClientSocket
+let connectionIdRef: { value: string }
 vi.mock('#app', () => ({
   useNuxtApp: () => ({
     $realtimeSocket: clientSocket,
+    $realtimeConnectionId: connectionIdRef,
   }),
   useRuntimeConfig: () => ({
     public: { nuxtRealtime: { logging: { level: 'silent' } } },
@@ -32,7 +34,11 @@ function triggerUnmount() {
   callback?.()
 }
 
-// Minimal server-side reimplementation of the lock:* handlers from socketio.ts
+// Minimal server-side reimplementation of the lock:* handlers from socketio.ts. Owner is
+// keyed by the handshake's connectionId when supplied (falling back to socket.id), mirroring
+// the real plugin, so tests can exercise ownedByMe against a stable id instead of socket.id.
+let forceReleaseAllowed = false
+
 function createLockServer() {
   const locks = new Map<string, string>()
   const infos = new Map<string, unknown>()
@@ -40,29 +46,31 @@ function createLockServer() {
   const io = new Server(httpServer)
 
   io.on('connection', (socket) => {
+    const owner = (socket.handshake.auth?.connectionId as string | undefined) ?? socket.id
+
     socket.on('lock:claim', (
-      { key, ownerInfo }: { key: string, ownerInfo?: unknown },
+      { key, ownerInfo }: { key: string, ownerInfo?: unknown, room?: string, ttl?: number },
       callback?: (r: { success: boolean, owned: boolean }) => void,
     ) => {
       const current = locks.get(key)
-      const owned = !current || current === socket.id
+      const owned = !current || current === owner
       if (owned) {
-        locks.set(key, socket.id)
+        locks.set(key, owner)
         infos.set(key, ownerInfo ?? null)
-        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: socket.id, ownerInfo: ownerInfo ?? null })
+        socket.to(`lock:${key}`).emit('lock:changed', { key, owner, ownerInfo: ownerInfo ?? null })
       }
       callback?.({ success: true, owned })
     })
 
     socket.on('lock:release', (
-      { key, changed }: { key: string, changed?: boolean },
+      { key, changed, meta }: { key: string, changed?: boolean, meta?: unknown },
       callback?: (r: { success: boolean }) => void,
     ) => {
-      const released = locks.get(key) === socket.id
+      const released = locks.get(key) === owner
       if (released) {
         locks.delete(key)
         infos.delete(key)
-        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null, changed: changed ?? false })
+        socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null, changed: changed ?? false, meta })
       }
       callback?.({ success: released })
     })
@@ -75,6 +83,22 @@ function createLockServer() {
     socket.on('lock:unsubscribe', (key: string) => {
       socket.leave(`lock:${key}`)
     })
+
+    socket.on('lock:forceRelease', ({ key }: { key: string }, callback?: (r: { success: boolean, error?: string }) => void) => {
+      if (!forceReleaseAllowed) {
+        callback?.({ success: false, error: 'Force-release is disabled' })
+        return
+      }
+      const current = locks.get(key)
+      if (!current) {
+        callback?.({ success: false, error: 'Lock is not held' })
+        return
+      }
+      locks.delete(key)
+      infos.delete(key)
+      io.to(`lock:${key}`).emit('lock:changed', { key, owner: null })
+      callback?.({ success: true })
+    })
   })
 
   return { io, httpServer, locks }
@@ -86,6 +110,7 @@ describe('useRealtimeLock', () => {
   let serverPort: number
 
   beforeEach(async () => {
+    forceReleaseAllowed = false
     ;({ io, httpServer } = createLockServer())
     await new Promise<void>((resolve) => {
       httpServer.listen(0, () => {
@@ -95,6 +120,7 @@ describe('useRealtimeLock', () => {
     })
     clientSocket = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>(resolve => clientSocket.on('connect', () => resolve()))
+    connectionIdRef = { value: clientSocket.id! }
   })
 
   afterEach(async () => {
@@ -268,5 +294,61 @@ describe('useRealtimeLock', () => {
 
     expect(onReleased).toHaveBeenCalledWith({ changed: false })
     other.close()
+  })
+
+  it('ownedByMe tracks the stable connectionId rather than socket.id', async () => {
+    // Reconnect this client with a connectionId in its handshake, and have the "owner"
+    // recorded server-side be that connectionId (as the real plugin does), ownedByMe must
+    // still resolve to true, proving it doesn't compare against socket.id under the hood.
+    clientSocket.close()
+    clientSocket = ioClient(`http://localhost:${serverPort}`, { auth: { connectionId: 'stable-connection-id' } })
+    await new Promise<void>(resolve => clientSocket.on('connect', () => resolve()))
+    connectionIdRef.value = 'stable-connection-id'
+
+    const lock = useRealtimeLock('doc-14')
+    const owned = await lock.claim()
+
+    expect(owned).toBe(true)
+    expect(lock.ownedByMe.value).toBe(true)
+    expect(clientSocket.id).not.toBe('stable-connection-id')
+  })
+
+  it('release() passes meta through to other clients\' lock:changed', async () => {
+    const lock = useRealtimeLock('doc-15')
+    await lock.claim()
+
+    const other = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>(resolve => other.on('connect', () => resolve()))
+    const received: unknown[] = []
+    other.on('lock:changed', data => received.push(data))
+    await new Promise<void>(resolve => other.emit('lock:subscribe', 'doc-15', () => resolve()))
+
+    await lock.release({ meta: { savedAt: 123 } })
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(received).toEqual([{ key: 'doc-15', owner: null, changed: false, meta: { savedAt: 123 } }])
+    other.close()
+  })
+
+  it('forceRelease() is denied by default and does not clear local state', async () => {
+    const lock = useRealtimeLock('doc-16')
+    await lock.claim()
+
+    const result = await lock.forceRelease()
+
+    expect(result).toBe(false)
+    expect(lock.ownedByMe.value).toBe(true)
+  })
+
+  it('forceRelease() succeeds and clears local state when the server allows it', async () => {
+    const lock = useRealtimeLock('doc-17')
+    await lock.claim()
+
+    forceReleaseAllowed = true
+    const result = await lock.forceRelease()
+
+    expect(result).toBe(true)
+    expect(lock.ownedByMe.value).toBe(false)
+    expect(lock.locked.value).toBe(false)
   })
 })

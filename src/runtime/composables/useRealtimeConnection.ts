@@ -1,6 +1,6 @@
 import { useNuxtApp } from '#app'
 import type { Socket } from 'socket.io-client'
-import { onUnmounted, ref, type Ref } from 'vue'
+import { onUnmounted, readonly, ref, type Ref } from 'vue'
 
 export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'reconnecting'
 
@@ -19,6 +19,11 @@ export interface UseRealtimeConnectionReturn {
   status: Readonly<Ref<ConnectionStatus>>
   attempt: Readonly<Ref<number | undefined>>
 
+  /**
+   * Stable id sent to the server as the lock owner
+   */
+  connectionId: Readonly<Ref<string | undefined>>
+
   // Methods
   connect: () => void
   disconnect: () => void
@@ -29,6 +34,7 @@ export interface UseRealtimeConnectionReturn {
 
 export function useRealtimeConnection(options: UseRealtimeConnectionOptions = {}): UseRealtimeConnectionReturn {
   const socket = import.meta.client ? useNuxtApp().$realtimeSocket : null
+  const connectionId = import.meta.client ? useNuxtApp().$realtimeConnectionId : ref<string | undefined>(undefined)
 
   // State
   const connected = ref<boolean>(socket?.connected ?? false)
@@ -97,6 +103,7 @@ export function useRealtimeConnection(options: UseRealtimeConnectionOptions = {}
     connected,
     status,
     attempt,
+    connectionId: readonly(connectionId),
 
     connect: () => socket?.connect(),
     disconnect: () => socket?.disconnect(),

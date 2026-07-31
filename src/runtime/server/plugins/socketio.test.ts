@@ -3,6 +3,14 @@ import { Server } from 'socket.io'
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { createStorage, prefixStorage, type Storage } from 'unstorage'
+import memoryDriver from 'unstorage/drivers/memory'
+
+function createRealtimeTestStorage(): Storage {
+  const root = createStorage({ driver: memoryDriver() })
+  root.mount('nuxt-realtime', memoryDriver())
+  return prefixStorage(root, 'nuxt-realtime')
+}
 
 describe('serverOptions passthrough', () => {
   const serverOptions = {
@@ -387,7 +395,7 @@ function createTestServer() {
       callback?.()
     })
 
-    // Lock operations — mirrors the claimLock/releaseLock fallback logic from lock.ts,
+    // Lock operations, mirrors the claimLock/releaseLock fallback logic from lock.ts,
     // re-implemented against the plain Map so this stays self-contained like the rest of the file.
     socket.on('lock:claim', (
       { key, ownerInfo }: { key: string, ownerInfo?: unknown },
@@ -433,7 +441,7 @@ function createTestServer() {
       socket.leave(`lock:${key}`)
     })
 
-    // Releases any locks still held when the socket goes away — mirrors the disconnect
+    // Releases any locks still held when the socket goes away, mirrors the disconnect
     // handler in socketio.ts.
     socket.on('disconnect', () => {
       ownedLocks.forEach((key) => {
@@ -1170,5 +1178,706 @@ describe('devtools instrumentation', () => {
     expect(entries.some(e => e.type === 'storage:subscribe' && e.detail === 'counter')).toBe(true)
     expect(entries.some(e => e.type === 'storage:set' && e.detail === 'counter')).toBe(true)
     expect(entries.some(e => e.type === 'disconnect' && e.detail === 'client disconnect')).toBe(true)
+  })
+})
+
+// The tests below drive the real plugin (real lock.ts/connection-registry.ts against real
+// storage) with a lightweight fakeSocket, matching the pattern used by the
+// "storage handlers reject reserved _lease: keys" describe above, 'socket.io' is mocked to
+// capture the connection handler, but everything downstream of it (storage, locks, the
+// connection registry, hooks) is real.
+describe('lock features: connectionId, rooms, ttl, meta, forceRelease', () => {
+  let storage: Storage
+  let connectionHandler: ((socket: unknown) => void | Promise<void>) | undefined
+  let ioEmits: Array<{ rooms: string[], event: string, data: unknown }>
+  let hookHandlers: Record<string, Array<(...args: unknown[]) => unknown>>
+
+  function callHook(name: string, ...args: unknown[]) {
+    return Promise.all((hookHandlers[name] ?? []).map(h => h(...args)))
+  }
+
+  function makeFakeSocket(id: string, connectionId?: string) {
+    const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {}
+    const rooms = new Set([id])
+    const toEmits: Array<{ rooms: string[], event: string, data: unknown }> = []
+    return {
+      id,
+      handshake: { auth: connectionId ? { connectionId } : {} },
+      rooms,
+      handlers,
+      toEmits,
+      join: vi.fn((room: string) => rooms.add(room)),
+      leave: vi.fn((room: string) => rooms.delete(room)),
+      to: vi.fn((r: string | string[]) => ({
+        emit: vi.fn((event: string, data: unknown) => {
+          toEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
+        }),
+      })),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+        (handlers[event] ??= []).push(handler)
+      }),
+    }
+  }
+
+  async function connect(id: string, connectionId?: string) {
+    const socket = makeFakeSocket(id, connectionId)
+    await connectionHandler!(socket)
+    return { socket }
+  }
+
+  beforeEach(async () => {
+    vi.resetModules()
+    storage = createRealtimeTestStorage()
+    hookHandlers = {}
+    ioEmits = []
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn((event: string, cb: (socket: unknown) => void) => {
+        if (event === 'connection') connectionHandler = cb
+      })
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      IoServer.prototype.to = vi.fn((r: string | string[]) => ({
+        emit: vi.fn((event: string, data: unknown) => {
+          ioEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
+        }),
+      }))
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          lock: { staleGraceMs: 50 },
+        },
+      }),
+      useStorage: () => storage,
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: {
+        hook: (name: string, cb: (...args: unknown[]) => unknown) => {
+          (hookHandlers[name] ??= []).push(cb)
+        },
+        callHook,
+      },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('uses connectionId (not socket.id) as the lock owner when the handshake supplies one', async () => {
+    const { socket } = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true, owned: true })
+    await expect(storage.getItem('_lock:doc-1')).resolves.toEqual({ owner: 'conn-1' })
+  })
+
+  it('reconnecting with the same connectionId reclaims ownership instead of dropping the lock', async () => {
+    const first = await connect('socket-a', 'conn-1')
+    await first.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    // Simulate a disconnect (starts the grace period) followed by a fast reconnect with the
+    // same connectionId but a new socket.id, before the grace period lapses.
+    await Promise.all(first.socket.handlers['disconnect']!.map(h => h()))
+    const second = await connect('socket-b', 'conn-1')
+
+    // Ownership is unaffected: releasing with the reclaimed connection still succeeds.
+    const callback = vi.fn()
+    await second.socket.handlers['lock:release']![0]!({ key: 'doc-1' }, callback)
+    expect(callback).toHaveBeenCalledWith({ success: true })
+  })
+
+  it('releases a stale connection\'s locks once the grace period lapses without a reconnect', async () => {
+    const { socket } = await connect('socket-a', 'conn-1')
+    await socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    await Promise.all(socket.handlers['disconnect']!.map(h => h()))
+    // staleGraceMs is 50ms above, but the sweep interval floors at 1000ms (see socketio.ts),
+    // wait past one sweep tick.
+    await wait(1300)
+
+    await expect(storage.getItem('_lock:doc-1')).resolves.toBeNull()
+  }, 10_000)
+
+  it('falls back to socket.id and releases immediately on disconnect when no connectionId is supplied', async () => {
+    const { socket } = await connect('socket-a')
+    await socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+    await expect(storage.getItem('_lock:doc-1')).resolves.toEqual({ owner: 'socket-a' })
+
+    await Promise.all(socket.handlers['disconnect']!.map(h => h()))
+    await expect(storage.getItem('_lock:doc-1')).resolves.toBeNull()
+  })
+
+  it('calls nuxt-realtime:identify with the connectionId and socket, without vetoing the connection', async () => {
+    const seen: unknown[] = []
+    hookHandlers['nuxt-realtime:identify'] = [(ctx: unknown) => {
+      seen.push(ctx)
+    }]
+
+    const { socket } = await connect('socket-a', 'conn-1')
+
+    expect(seen).toEqual([{ connectionId: 'conn-1', socket, info: {} }])
+  })
+
+  it('relays release meta verbatim in the lock:changed broadcast', async () => {
+    const claimer = await connect('socket-a', 'conn-1')
+    await claimer.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    const callback = vi.fn()
+    await claimer.socket.handlers['lock:release']![0]!({ key: 'doc-1', meta: { savedAt: 123 } }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true })
+    expect(claimer.socket.toEmits).toContainEqual({
+      rooms: ['lock:doc-1'],
+      event: 'lock:changed',
+      data: { key: 'doc-1', owner: null, changed: false, meta: { savedAt: 123 }, room: undefined },
+    })
+  })
+
+  it('a ttl-expired lock can be claimed by someone else without an explicit release', async () => {
+    const { socket } = await connect('socket-a', 'conn-1')
+    await socket.handlers['lock:claim']![0]!({ key: 'doc-1', ttl: 20 }, vi.fn())
+
+    await wait(30)
+
+    const other = await connect('socket-b', 'conn-2')
+    const callback = vi.fn()
+    await other.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, callback)
+    expect(callback).toHaveBeenCalledWith({ success: true, owned: true })
+  })
+
+  it('lock:subscribeRoom returns a snapshot of every lock tagged with that room', async () => {
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-1', room: 'project-42' }, vi.fn())
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-2', room: 'project-42', ownerInfo: 'Alice' }, vi.fn())
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-3', room: 'other-room' }, vi.fn())
+
+    const viewer = await connect('socket-c')
+    const snapshot = await new Promise((resolve) => {
+      viewer.socket.handlers['lock:subscribeRoom']![0]!('project-42', resolve)
+    })
+
+    expect(snapshot).toEqual({
+      'doc-1': { owner: 'conn-1', ownerInfo: null },
+      'doc-2': { owner: 'conn-1', ownerInfo: 'Alice' },
+    })
+  })
+
+  it('broadcasts live diffs to room subscribers on claim and release', async () => {
+    const viewer = await connect('socket-c')
+    await new Promise(resolve => viewer.socket.handlers['lock:subscribeRoom']![0]!('project-42', resolve))
+
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-1', room: 'project-42' }, vi.fn())
+
+    expect(a.socket.toEmits).toContainEqual({
+      rooms: ['lock:doc-1', 'lockroom:project-42'],
+      event: 'lock:changed',
+      data: { key: 'doc-1', owner: 'conn-1', ownerInfo: null, room: 'project-42' },
+    })
+  })
+
+  it('lock:forceRelease is denied by default when no canForceRelease hook is registered', async () => {
+    const owner = await connect('socket-a', 'conn-1')
+    await owner.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    const admin = await connect('socket-b', 'conn-2')
+    const callback = vi.fn()
+    await admin.socket.handlers['lock:forceRelease']![0]!({ key: 'doc-1' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, error: 'Force-release is disabled' })
+    await expect(storage.getItem('_lock:doc-1')).resolves.toEqual({ owner: 'conn-1' })
+  })
+
+  it('lock:forceRelease succeeds and broadcasts when a registered hook sets ctx.allow', async () => {
+    hookHandlers['nuxt-realtime:canForceRelease'] = [(ctx: { allow: boolean }) => {
+      ctx.allow = true
+    }]
+
+    const owner = await connect('socket-a', 'conn-1')
+    await owner.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+
+    const admin = await connect('socket-b', 'conn-2')
+    const callback = vi.fn()
+    await admin.socket.handlers['lock:forceRelease']![0]!({ key: 'doc-1' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true })
+    await expect(storage.getItem('_lock:doc-1')).resolves.toBeNull()
+    expect(ioEmits).toContainEqual({
+      rooms: ['lock:doc-1'],
+      event: 'lock:changed',
+      data: { key: 'doc-1', owner: null, room: undefined },
+    })
+  })
+
+  it('lock:forceRelease reports failure for a lock that is not held', async () => {
+    const admin = await connect('socket-b', 'conn-2')
+    const callback = vi.fn()
+    await admin.socket.handlers['lock:forceRelease']![0]!({ key: 'never-claimed' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, error: 'Lock is not held' })
+  })
+})
+
+describe('presence', () => {
+  let storage: Storage
+  let connectionHandler: ((socket: unknown) => void | Promise<void>) | undefined
+  let ioEmits: Array<{ rooms: string[], event: string, data: unknown }>
+
+  function makeFakeSocket(id: string, connectionId?: string) {
+    const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {}
+    const rooms = new Set([id])
+    const toEmits: Array<{ rooms: string[], event: string, data: unknown }> = []
+    return {
+      id,
+      handshake: { auth: connectionId ? { connectionId } : {} },
+      rooms,
+      handlers,
+      toEmits,
+      join: vi.fn((room: string) => rooms.add(room)),
+      leave: vi.fn((room: string) => rooms.delete(room)),
+      to: vi.fn((r: string | string[]) => ({
+        emit: vi.fn((event: string, data: unknown) => {
+          toEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
+        }),
+      })),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+        (handlers[event] ??= []).push(handler)
+      }),
+    }
+  }
+
+  async function connect(id: string, connectionId?: string) {
+    const socket = makeFakeSocket(id, connectionId)
+    await connectionHandler!(socket)
+    return { socket }
+  }
+
+  beforeEach(async () => {
+    vi.resetModules()
+    storage = createRealtimeTestStorage()
+    ioEmits = []
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn((event: string, cb: (socket: unknown) => void) => {
+        if (event === 'connection') connectionHandler = cb
+      })
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      IoServer.prototype.to = vi.fn((r: string | string[]) => ({
+        emit: vi.fn((event: string, data: unknown) => {
+          ioEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
+        }),
+      }))
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          lock: { staleGraceMs: 50 },
+        },
+      }),
+      useStorage: () => storage,
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: { hook: vi.fn(), callHook: vi.fn().mockResolvedValue(undefined) },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('presence:join adds the connectionId to the room and broadcasts to other members', async () => {
+    const viewer = await connect('socket-b', 'conn-2')
+    await new Promise(resolve => viewer.socket.handlers['presence:subscribeRoom']![0]!('project-42', resolve))
+
+    const joiner = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await joiner.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true })
+    expect(joiner.socket.toEmits).toContainEqual({
+      rooms: ['presence:project-42'],
+      event: 'presence:changed',
+      data: { room: 'project-42', connectionId: 'conn-1', info: 'Alice' },
+    })
+  })
+
+  it('presence:subscribeRoom returns a snapshot of everyone currently present', async () => {
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, vi.fn())
+    const b = await connect('socket-b', 'conn-2')
+    await b.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Bob' }, vi.fn())
+
+    const viewer = await connect('socket-c')
+    const snapshot = await new Promise(resolve =>
+      viewer.socket.handlers['presence:subscribeRoom']![0]!('project-42', resolve),
+    )
+
+    expect(snapshot).toEqual({ 'conn-1': 'Alice', 'conn-2': 'Bob' })
+  })
+
+  it('presence:leave removes the member and broadcasts a null-info leave', async () => {
+    const viewer = await connect('socket-b')
+    await new Promise(resolve => viewer.socket.handlers['presence:subscribeRoom']![0]!('project-42', resolve))
+
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, vi.fn())
+
+    const callback = vi.fn()
+    await a.socket.handlers['presence:leave']![0]!({ room: 'project-42' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true })
+    expect(a.socket.toEmits).toContainEqual({
+      rooms: ['presence:project-42'],
+      event: 'presence:changed',
+      data: { room: 'project-42', connectionId: 'conn-1', info: null },
+    })
+  })
+
+  it('presence:leave for a connection that never joined is a no-op with no broadcast', async () => {
+    const viewer = await connect('socket-b')
+    const callback = vi.fn()
+    await viewer.socket.handlers['presence:leave']![0]!({ room: 'project-42' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true })
+    expect(viewer.socket.toEmits).toEqual([])
+  })
+
+  it('reconnecting with the same connectionId within the grace period keeps presence, no leave broadcast', async () => {
+    const viewer = await connect('socket-c')
+    await new Promise(resolve => viewer.socket.handlers['presence:subscribeRoom']![0]!('project-42', resolve))
+
+    const first = await connect('socket-a', 'conn-1')
+    await first.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, vi.fn())
+
+    await Promise.all(first.socket.handlers['disconnect']!.map(h => h()))
+    await connect('socket-a2', 'conn-1')
+
+    // Grace period hasn't lapsed (nothing has swept yet), still present.
+    const snapshot = await new Promise(resolve =>
+      viewer.socket.handlers['presence:subscribeRoom']![0]!('project-42', resolve),
+    )
+    expect(snapshot).toEqual({ 'conn-1': 'Alice' })
+  })
+
+  it('the grace-period sweep leaves presence for a stale connection that never reconnects', async () => {
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, vi.fn())
+
+    await Promise.all(a.socket.handlers['disconnect']!.map(h => h()))
+    // staleGraceMs is 50ms above, but the sweep interval floors at 1000ms (see socketio.ts).
+    await wait(1300)
+
+    await expect(storage.getItem('_presence:project-42:conn-1')).resolves.toBeNull()
+    expect(ioEmits).toContainEqual({
+      rooms: ['presence:project-42'],
+      event: 'presence:changed',
+      data: { room: 'project-42', connectionId: 'conn-1', info: null },
+    })
+  }, 10_000)
+
+  it('falls back to socket.id and leaves immediately on disconnect when no connectionId is supplied', async () => {
+    const a = await connect('socket-a')
+    await a.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, vi.fn())
+    await expect(storage.getItem('_presence:project-42:socket-a')).resolves.toBe('Alice')
+
+    await Promise.all(a.socket.handlers['disconnect']!.map(h => h()))
+    await expect(storage.getItem('_presence:project-42:socket-a')).resolves.toBeNull()
+  })
+})
+
+describe('rooms', () => {
+  let storage: Storage
+  let connectionHandler: ((socket: unknown) => void | Promise<void>) | undefined
+  let hookHandlers: Record<string, Array<(...args: unknown[]) => unknown>>
+
+  function callHook(name: string, ...args: unknown[]) {
+    return Promise.all((hookHandlers[name] ?? []).map(h => h(...args)))
+  }
+
+  function makeFakeSocket(id: string, connectionId?: string) {
+    const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {}
+    const rooms = new Set([id])
+    return {
+      id,
+      handshake: { auth: connectionId ? { connectionId } : {} },
+      rooms,
+      handlers,
+      join: vi.fn((room: string) => rooms.add(room)),
+      leave: vi.fn((room: string) => rooms.delete(room)),
+      to: vi.fn(() => ({ emit: vi.fn() })),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
+        (handlers[event] ??= []).push(handler)
+      }),
+    }
+  }
+
+  async function connect(id: string, connectionId?: string) {
+    const socket = makeFakeSocket(id, connectionId)
+    await connectionHandler!(socket)
+    return { socket }
+  }
+
+  beforeEach(async () => {
+    vi.resetModules()
+    storage = createRealtimeTestStorage()
+    hookHandlers = {}
+
+    vi.doMock('engine.io', () => ({ Server: vi.fn() }))
+
+    vi.doMock('socket.io', () => {
+      const IoServer = vi.fn()
+      IoServer.prototype.bind = vi.fn()
+      IoServer.prototype.on = vi.fn((event: string, cb: (socket: unknown) => void) => {
+        if (event === 'connection') connectionHandler = cb
+      })
+      IoServer.prototype.sockets = { adapter: { rooms: { has: vi.fn().mockReturnValue(false) } } }
+      IoServer.prototype.to = vi.fn(() => ({ emit: vi.fn() }))
+      return { Server: IoServer }
+    })
+
+    vi.doMock('h3', () => ({
+      defineEventHandler: vi.fn().mockReturnValue({}),
+    }))
+
+    vi.doMock('../utils/logger', () => ({
+      createRealtimeLogger: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+      }),
+    }))
+
+    vi.doMock('nitropack/runtime', () => ({
+      defineNitroPlugin: (factory: (app: unknown) => unknown) => factory,
+      useRuntimeConfig: () => ({
+        public: {
+          nuxtRealtime: {
+            cleanup: false,
+            logging: { level: null, format: 'text' },
+          },
+        },
+        nuxtRealtime: {
+          lock: { staleGraceMs: 50 },
+        },
+      }),
+      useStorage: () => storage,
+    }))
+
+    const { default: pluginFactory } = await import('./socketio')
+    const nitroApp = {
+      hooks: {
+        hook: (name: string, cb: (...args: unknown[]) => unknown) => {
+          (hookHandlers[name] ??= []).push(cb)
+        },
+        callHook,
+      },
+      router: { use: vi.fn() },
+    }
+    await (pluginFactory as unknown as (app: unknown) => Promise<void>)(nitroApp)
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('room:join fires nuxt-realtime:roomCreated only for the first member', async () => {
+    const created: unknown[] = []
+    hookHandlers['nuxt-realtime:roomCreated'] = [(ctx: unknown) => {
+      created.push(ctx)
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    const callbackA = vi.fn()
+    await a.socket.handlers['room:join']![0]!('project-42', callbackA)
+
+    const b = await connect('socket-b', 'conn-2')
+    const callbackB = vi.fn()
+    await b.socket.handlers['room:join']![0]!('project-42', callbackB)
+
+    expect(callbackA).toHaveBeenCalledWith({ success: true })
+    expect(callbackB).toHaveBeenCalledWith({ success: true })
+    expect(created).toEqual([{ roomId: 'project-42' }])
+  })
+
+  it('re-joining a room you are already in does not re-fire roomCreated or re-run canJoinRoom', async () => {
+    const created: unknown[] = []
+    const authChecks: unknown[] = []
+    hookHandlers['nuxt-realtime:roomCreated'] = [(ctx: unknown) => {
+      created.push(ctx)
+    }]
+    hookHandlers['nuxt-realtime:canJoinRoom'] = [(ctx: unknown) => {
+      authChecks.push(ctx)
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['room:join']![0]!('project-42', vi.fn())
+    await a.socket.handlers['room:join']![0]!('project-42', vi.fn())
+
+    expect(created).toHaveLength(1)
+    expect(authChecks).toHaveLength(1)
+  })
+
+  it('nuxt-realtime:canJoinRoom denies by setting ctx.allow = false', async () => {
+    hookHandlers['nuxt-realtime:canJoinRoom'] = [(ctx: { allow: boolean }) => {
+      ctx.allow = false
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await a.socket.handlers['room:join']![0]!('project-42', callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: false, error: 'Not allowed to join this room' })
+  })
+
+  it('canJoinRoom denial also blocks presence:join and lock:claim(room)', async () => {
+    hookHandlers['nuxt-realtime:canJoinRoom'] = [(ctx: { allow: boolean }) => {
+      ctx.allow = false
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+
+    const presenceCallback = vi.fn()
+    await a.socket.handlers['presence:join']![0]!({ room: 'project-42', info: 'Alice' }, presenceCallback)
+    expect(presenceCallback).toHaveBeenCalledWith({ success: false, error: 'Not allowed to join this room' })
+
+    const lockCallback = vi.fn()
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-1', room: 'project-42' }, lockCallback)
+    expect(lockCallback).toHaveBeenCalledWith({ success: false, owned: false, error: 'Not allowed to join this room' })
+  })
+
+  it('lock:claim without a room never touches canJoinRoom, even when a hook is registered', async () => {
+    const authChecks: unknown[] = []
+    hookHandlers['nuxt-realtime:canJoinRoom'] = [(ctx: unknown) => {
+      authChecks.push(ctx)
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    const callback = vi.fn()
+    await a.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, callback)
+
+    expect(callback).toHaveBeenCalledWith({ success: true, owned: true })
+    expect(authChecks).toHaveLength(0)
+  })
+
+  it('room:leave fires nuxt-realtime:roomEmpty only when it empties the room', async () => {
+    const empty: unknown[] = []
+    hookHandlers['nuxt-realtime:roomEmpty'] = [(ctx: unknown) => {
+      empty.push(ctx)
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['room:join']![0]!('project-42', vi.fn())
+    const b = await connect('socket-b', 'conn-2')
+    await b.socket.handlers['room:join']![0]!('project-42', vi.fn())
+
+    await a.socket.handlers['room:leave']![0]!('project-42', vi.fn())
+    expect(empty).toHaveLength(0)
+
+    await b.socket.handlers['room:leave']![0]!('project-42', vi.fn())
+    expect(empty).toEqual([{ roomId: 'project-42' }])
+  })
+
+  it('the grace-period sweep fires roomEmpty for a stale connection that never reconnects', async () => {
+    const empty: unknown[] = []
+    hookHandlers['nuxt-realtime:roomEmpty'] = [(ctx: unknown) => {
+      empty.push(ctx)
+    }]
+
+    const a = await connect('socket-a', 'conn-1')
+    await a.socket.handlers['room:join']![0]!('project-42', vi.fn())
+
+    await Promise.all(a.socket.handlers['disconnect']!.map(h => h()))
+    // staleGraceMs is 50ms above, but the sweep interval floors at 1000ms (see socketio.ts).
+    await wait(1300)
+
+    expect(empty).toEqual([{ roomId: 'project-42' }])
+  }, 10_000)
+
+  it('reconnecting within the grace period keeps room membership, no roomEmpty firing', async () => {
+    const empty: unknown[] = []
+    hookHandlers['nuxt-realtime:roomEmpty'] = [(ctx: unknown) => {
+      empty.push(ctx)
+    }]
+
+    const first = await connect('socket-a', 'conn-1')
+    await first.socket.handlers['room:join']![0]!('project-42', vi.fn())
+
+    await Promise.all(first.socket.handlers['disconnect']!.map(h => h()))
+    await connect('socket-a2', 'conn-1')
+
+    expect(empty).toEqual([])
+  })
+
+  it('falls back to socket.id and leaves the room immediately on disconnect when no connectionId is supplied', async () => {
+    const empty: unknown[] = []
+    hookHandlers['nuxt-realtime:roomEmpty'] = [(ctx: unknown) => {
+      empty.push(ctx)
+    }]
+
+    const a = await connect('socket-a')
+    await a.socket.handlers['room:join']![0]!('project-42', vi.fn())
+
+    await Promise.all(a.socket.handlers['disconnect']!.map(h => h()))
+    expect(empty).toEqual([{ roomId: 'project-42' }])
   })
 })

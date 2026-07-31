@@ -5,8 +5,11 @@ import { Server as Engine, type ServerOptions } from 'engine.io'
 import { Server } from 'socket.io'
 import { defineEventHandler, getQuery, createError } from 'h3'
 import { createRealtimeLogger } from '../utils/logger'
-import { claimLock, getLockOwner, getLockOwnerInfo, releaseLock, touchLease } from '../utils/lock'
-import type { LockClaimPayload, LockReleasePayload } from '../../types'
+import { claimLock, getLockOwner, getLockOwnerInfo, getLockRoom, getLocksOwnedBy, getRoomKeys, releaseLock, touchLease } from '../utils/lock'
+import { createConnectionRegistry } from '../utils/connection-registry'
+import { getPresenceSnapshot, getRoomsForConnection as getPresenceRoomsForConnection, joinPresence, leavePresence } from '../utils/presence'
+import { getRoomsForConnection, isRoomMember, joinRoom, leaveRoom } from '../utils/room-registry'
+import type { LockClaimPayload, LockReleasePayload, LockRoomSnapshot, PresenceJoinPayload } from '../../types'
 import { devtoolsState, createEventLog, getConnectionSummaries, getStorageSnapshot, type DevtoolsEventType, type DevtoolsIoLike } from '../utils/devtools-state'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
@@ -72,6 +75,10 @@ export default defineNitroPlugin(async (nitroApp) => {
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
+  const lockConfig = (config as { nuxtRealtime?: { lock?: { defaultTtl?: number, staleGraceMs?: number } } }).nuxtRealtime?.lock
+  const staleGraceMs = lockConfig?.staleGraceMs ?? 10_000
+  const defaultTtl = lockConfig?.defaultTtl
+
   const socketioConfig = (config as { nuxtRealtime?: { socketio?: { path?: string, serverOptions?: ServerOptions } } }).nuxtRealtime?.socketio
   const serverOptions = socketioConfig?.serverOptions
 
@@ -113,6 +120,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
 
   const storage = useStorage('nuxt-realtime')
+  const registry = createConnectionRegistry(storage, { staleGraceMs })
 
   // Cross-server sync: watch for writes from other server instances and broadcast
   // to locally subscribed Socket.IO clients. Drivers that don't support native
@@ -155,6 +163,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   // event system falls back to single-server behavior.
   let unsubscribeEvents: (() => void) | null = null
   let cleanupIntervalId: ReturnType<typeof setInterval> | null = null
+  let graceSweepIntervalId: ReturnType<typeof setInterval> | null = null
 
   if (pubsub) {
     unsubscribeEvents = pubsub.subscribe(EVENT_CHANNEL, (message) => {
@@ -185,6 +194,9 @@ export default defineNitroPlugin(async (nitroApp) => {
     if (cleanupIntervalId !== null) {
       clearInterval(cleanupIntervalId)
     }
+    if (graceSweepIntervalId !== null) {
+      clearInterval(graceSweepIntervalId)
+    }
     if (typeof unwatch === 'function') {
       await unwatch()
     }
@@ -196,7 +208,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   io.bind(engine)
 
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     logger.debug('Client connected:', socket.id)
     record('connect', socket.id)
 
@@ -204,7 +216,59 @@ export default defineNitroPlugin(async (nitroApp) => {
       record('disconnect', socket.id, reason)
     })
 
+    // A client-supplied connectionId (see plugin.client.ts) survives reconnects, unlike
+    // socket.id. It's the stable identity used for both lock ownership and presence
+    // membership so a refresh/reconnect doesn't drop either. Opt-in: falls back to socket.id
+    // when absent (in which case there's no reconnect-grace behavior, see disconnect below).
+    const connectionId = socket.handshake?.auth?.connectionId as string | undefined
+    if (connectionId) {
+      const identifyCtx = { connectionId, socket, info: {} as Record<string, unknown> }
+      try {
+        await nitroApp.hooks.callHook('nuxt-realtime:identify', identifyCtx)
+      }
+      catch (error) {
+        logger.error('nuxt-realtime:identify hook failed:', error)
+      }
+      const reclaimed = await registry.reclaim(connectionId, socket.id)
+      if (!reclaimed) {
+        await registry.register(connectionId, socket.id, identifyCtx.info)
+      }
+    }
+    const identity = connectionId ?? socket.id
+
     const ownedLocks = new Set<string>()
+    // Only consulted when connectionId is absent (see disconnect below). When present, the
+    // connection-registry grace-period sweep finds these via the storage-backed reverse index
+    // in presence.ts/room-registry.ts instead, since that's what makes the sweep correct
+    // across instances.
+    const presenceRooms = new Set<string>()
+    const joinedRooms = new Set<string>()
+
+    // The single per-room auth checkpoint, shared by room:join, presence:join, and
+    // lock:claim(room). A connection only ever passes nuxt-realtime:canJoinRoom once per
+    // room, the first time it touches that room via any of the three. Returns whether the
+    // caller is (or already was) a member.
+    async function ensureRoomMembership(roomId: string): Promise<boolean> {
+      const alreadyMember = await isRoomMember(storage, roomId, identity)
+      if (alreadyMember) return true
+
+      const ctx = { roomId, connectionId: identity, socket, allow: true }
+      try {
+        await nitroApp.hooks.callHook('nuxt-realtime:canJoinRoom', ctx)
+      }
+      catch (error) {
+        logger.error('nuxt-realtime:canJoinRoom hook failed:', error)
+      }
+      if (!ctx.allow) return false
+
+      const { firstMember } = await joinRoom(storage, roomId, identity)
+      joinedRooms.add(roomId)
+      socket.join(`room:${roomId}`)
+      if (firstMember) {
+        await nitroApp.hooks.callHook('nuxt-realtime:roomCreated', { roomId })
+      }
+      return true
+    }
 
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
@@ -286,13 +350,20 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     // Lock operations
-    socket.on('lock:claim', async ({ key, ownerInfo }: LockClaimPayload, callback) => {
+    socket.on('lock:claim', async ({ key, ownerInfo, room, ttl }: LockClaimPayload, callback) => {
       try {
-        const owner = socket.id
-        const owned = await claimLock(storage, key, owner, ownerInfo)
+        if (room && !(await ensureRoomMembership(room))) {
+          if (callback) {
+            callback({ success: false, owned: false, error: 'Not allowed to join this room' })
+          }
+          return
+        }
+        const owned = await claimLock(storage, key, identity, ownerInfo, { room, ttl: ttl ?? defaultTtl })
         if (owned) {
           ownedLocks.add(key)
-          socket.to(`lock:${key}`).emit('lock:changed', { key, owner, ownerInfo: ownerInfo ?? null })
+          const rooms = [`lock:${key}`]
+          if (room) rooms.push(`lockroom:${room}`)
+          socket.to(rooms).emit('lock:changed', { key, owner: identity, ownerInfo: ownerInfo ?? null, room })
         }
         if (callback) {
           callback({ success: true, owned })
@@ -306,12 +377,15 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('lock:release', async ({ key, changed }: LockReleasePayload, callback) => {
+    socket.on('lock:release', async ({ key, changed, meta }: LockReleasePayload, callback) => {
       try {
-        const released = await releaseLock(storage, key, socket.id)
+        const room = await getLockRoom(storage, key)
+        const released = await releaseLock(storage, key, identity)
         if (released) {
           ownedLocks.delete(key)
-          socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null, changed: changed ?? false })
+          const rooms = [`lock:${key}`]
+          if (room) rooms.push(`lockroom:${room}`)
+          socket.to(rooms).emit('lock:changed', { key, owner: null, changed: changed ?? false, meta, room: room ?? undefined })
         }
         if (callback) {
           callback({ success: released })
@@ -346,17 +420,175 @@ export default defineNitroPlugin(async (nitroApp) => {
       socket.leave(`lock:${key}`)
     })
 
+    socket.on('lock:subscribeRoom', async (room: string, callback) => {
+      socket.join(`lockroom:${room}`)
+      try {
+        const keys = await getRoomKeys(storage, room)
+        const snapshot: LockRoomSnapshot = {}
+        for (const key of keys) {
+          const owner = await getLockOwner(storage, key)
+          if (owner) {
+            snapshot[key] = { owner, ownerInfo: await getLockOwnerInfo(storage, key) }
+          }
+        }
+        if (callback) callback(snapshot)
+      }
+      catch (error) {
+        logger.error('Lock subscribeRoom error:', error)
+        if (callback) callback({})
+      }
+    })
+
+    socket.on('lock:unsubscribeRoom', (room: string) => {
+      socket.leave(`lockroom:${room}`)
+    })
+
+    socket.on('lock:forceRelease', async ({ key }: { key: string }, callback) => {
+      try {
+        const currentOwner = await getLockOwner(storage, key)
+        const ctx = { key, connectionId, currentOwner, allow: false }
+        await nitroApp.hooks.callHook('nuxt-realtime:canForceRelease', ctx)
+
+        if (currentOwner === null) {
+          if (callback) callback({ success: false, error: 'Lock is not held' })
+          return
+        }
+        if (!ctx.allow) {
+          if (callback) callback({ success: false, error: 'Force-release is disabled' })
+          return
+        }
+
+        const room = await getLockRoom(storage, key)
+        const released = await releaseLock(storage, key, currentOwner)
+        if (released) {
+          const rooms = [`lock:${key}`]
+          if (room) rooms.push(`lockroom:${room}`)
+          io.to(rooms).emit('lock:changed', { key, owner: null, room: room ?? undefined })
+        }
+        if (callback) callback({ success: released })
+      }
+      catch (error) {
+        logger.error('Lock force-release error:', error)
+        if (callback) callback({ success: false, error: 'Error while force-releasing lock' })
+      }
+    })
+
+    // Presence operations: "who's currently in room X", independent of whether they hold a
+    // lock. Reuses the same opaque room string locks tag with; no new grouping concept.
+    socket.on('presence:join', async ({ room, info }: PresenceJoinPayload, callback) => {
+      try {
+        if (!(await ensureRoomMembership(room))) {
+          if (callback) callback({ success: false, error: 'Not allowed to join this room' })
+          return
+        }
+        await joinPresence(storage, room, identity, info ?? null)
+        presenceRooms.add(room)
+        socket.join(`presence:${room}`)
+        socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: identity, info: info ?? null })
+        if (callback) callback({ success: true })
+      }
+      catch (error) {
+        logger.error('Presence join error:', error)
+        if (callback) callback({ success: false })
+      }
+    })
+
+    socket.on('presence:leave', async ({ room }: { room: string }, callback) => {
+      try {
+        const existed = await leavePresence(storage, room, identity)
+        presenceRooms.delete(room)
+        socket.leave(`presence:${room}`)
+        if (existed) {
+          socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: identity, info: null })
+        }
+        if (callback) callback({ success: true })
+      }
+      catch (error) {
+        logger.error('Presence leave error:', error)
+        if (callback) callback({ success: false })
+      }
+    })
+
+    socket.on('presence:subscribeRoom', async (room: string, callback) => {
+      socket.join(`presence:${room}`)
+      try {
+        const snapshot = await getPresenceSnapshot(storage, room)
+        if (callback) callback(snapshot)
+      }
+      catch (error) {
+        logger.error('Presence subscribeRoom error:', error)
+        if (callback) callback({})
+      }
+    })
+
+    // Room membership: the explicit version of what presence:join/lock:claim(room) already
+    // do implicitly via ensureRoomMembership. Scopes state/events client-side (see
+    // useRealtimeRoom); server-side it's purely membership + lifecycle hooks + auth.
+    socket.on('room:join', async (roomId: string, callback) => {
+      try {
+        const allowed = await ensureRoomMembership(roomId)
+        if (callback) {
+          callback(allowed ? { success: true } : { success: false, error: 'Not allowed to join this room' })
+        }
+      }
+      catch (error) {
+        logger.error('Room join error:', error)
+        if (callback) callback({ success: false, error: 'Error while joining room' })
+      }
+    })
+
+    socket.on('room:leave', async (roomId: string, callback) => {
+      try {
+        const { left, nowEmpty } = await leaveRoom(storage, roomId, identity)
+        joinedRooms.delete(roomId)
+        socket.leave(`room:${roomId}`)
+        if (left && nowEmpty) {
+          await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
+        }
+        if (callback) callback({ success: true })
+      }
+      catch (error) {
+        logger.error('Room leave error:', error)
+        if (callback) callback({ success: false, error: 'Error while leaving room' })
+      }
+    })
+
     socket.on('disconnect', async () => {
       try {
+        if (connectionId) {
+          // Give the client a grace period to reconnect with the same connectionId before
+          // releasing anything. The periodic sweep below does the actual release once the
+          // grace period lapses without a reclaim (see createConnectionRegistry). That sweep
+          // also leaves presence/room-membership in every room this connection was part of
+          // (via the storage-backed reverse indexes in presence.ts/room-registry.ts), so
+          // nothing to do here for presence/rooms.
+          await registry.markStale(connectionId)
+          return
+        }
         await Promise.all([...ownedLocks].map(async (key) => {
+          const room = await getLockRoom(storage, key)
           const released = await releaseLock(storage, key, socket.id)
           if (released) {
-            socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null })
+            const rooms = [`lock:${key}`]
+            if (room) rooms.push(`lockroom:${room}`)
+            socket.to(rooms).emit('lock:changed', { key, owner: null, room: room ?? undefined })
+          }
+        }))
+        await Promise.all([...presenceRooms].map(async (room) => {
+          const existed = await leavePresence(storage, room, socket.id)
+          if (existed) {
+            socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: socket.id, info: null })
+          }
+        }))
+        await Promise.all([...joinedRooms].map(async (roomId) => {
+          const { left, nowEmpty } = await leaveRoom(storage, roomId, socket.id)
+          if (left && nowEmpty) {
+            await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
           }
         }))
       }
       catch (error) {
-        logger.error('Lock release on disconnect error:', error)
+        logger.error('Lock/presence/room release on disconnect error:', error)
       }
     })
 
@@ -429,6 +661,67 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       catch (error) {
         logger.error('Cleanup job error:', error)
+      }
+    }, interval)
+  }
+
+  // Connection-registry grace-period sweep. Deliberately separate from the cleanup job above:
+  // that one defaults to a 5-minute cadence (fine for idle keys), while a stale-connection
+  // grace period is typically ~10s and needs a much tighter check interval to mean anything.
+  // Storage-backed and poll-based (no in-memory setTimeout) so it works correctly regardless
+  // of which server instance saw the disconnect vs. which one sees the reconnect, and survives
+  // a server restart mid-grace-period (a fresh process just resumes sweeping).
+  {
+    const sweepInterval = Math.max(1000, staleGraceMs / 3)
+    const jitter = sweepInterval * 0.1
+    const interval = sweepInterval + Math.random() * jitter * 2 - jitter
+
+    graceSweepIntervalId = setInterval(async () => {
+      try {
+        for (const connectionId of await registry.listIds()) {
+          const record = await registry.lookup(connectionId)
+          if (!record || !registry.isGraceExpired(record)) continue
+
+          const keys = await getLocksOwnedBy(storage, connectionId)
+          await Promise.all(keys.map(async (key) => {
+            const room = await getLockRoom(storage, key)
+            const released = await releaseLock(storage, key, connectionId)
+            if (released) {
+              const rooms = [`lock:${key}`]
+              if (room) rooms.push(`lockroom:${room}`)
+              io.to(rooms).emit('lock:changed', { key, owner: null, room: room ?? undefined })
+            }
+          }))
+
+          const presenceRoomsHeld = await getPresenceRoomsForConnection(storage, connectionId)
+          await Promise.all(presenceRoomsHeld.map(async (room) => {
+            const existed = await leavePresence(storage, room, connectionId)
+            if (existed) {
+              io.to(`presence:${room}`).emit('presence:changed', { room, connectionId, info: null })
+            }
+          }))
+
+          const memberOfRooms = await getRoomsForConnection(storage, connectionId)
+          await Promise.all(memberOfRooms.map(async (roomId) => {
+            const { left, nowEmpty } = await leaveRoom(storage, roomId, connectionId)
+            if (left && nowEmpty) {
+              await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
+            }
+          }))
+
+          // Re-check right before removing: releasing the locks/presence/rooms above (a full
+          // key scan plus N releases) takes long enough that a reconnect could have reclaimed this
+          // connectionId in the meantime. Removing unconditionally would wipe out that fresh
+          // reclaim, and since markStale() is a no-op on a missing record, a later disconnect
+          // would never re-enter the grace period, so those locks would then never be released.
+          const stillExpired = await registry.lookup(connectionId)
+          if (stillExpired && registry.isGraceExpired(stillExpired)) {
+            await registry.remove(connectionId)
+          }
+        }
+      }
+      catch (error) {
+        logger.error('Connection grace-period sweep error:', error)
       }
     }, interval)
   }

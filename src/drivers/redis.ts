@@ -13,6 +13,9 @@ const CLAIM_LOCK_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current == false or current == ARGV[1] then
   redis.call('SET', KEYS[1], ARGV[1])
+  if tonumber(ARGV[2]) > 0 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  end
   return 1
 end
 return 0
@@ -28,7 +31,7 @@ return 0
 `
 
 interface RedisWithLockCommands extends Redis {
-  claimLock: (key: string, owner: string) => Promise<number>
+  claimLock: (key: string, owner: string, ttlMs: number) => Promise<number>
   releaseLock: (key: string, owner: string) => Promise<number>
 }
 
@@ -129,8 +132,8 @@ export class RealtimePubSub {
     })
   }
 
-  async claimLock(key: string, owner: string): Promise<boolean> {
-    const result = await (this.pub as RedisWithLockCommands).claimLock(key, owner)
+  async claimLock(key: string, owner: string, ttlMs = 0): Promise<boolean> {
+    const result = await (this.pub as RedisWithLockCommands).claimLock(key, owner, ttlMs)
     return result === 1
   }
 
@@ -186,7 +189,7 @@ export class RealtimePubSub {
  *
  * @example
  * ```ts
- * // nuxt.config.ts — Redis Cluster in production
+ * // nuxt.config.ts, Redis Cluster in production
  * import { reactiveRedisDriver } from 'nuxt-realtime/drivers/redis'
  *
  * export default defineNuxtConfig({
@@ -245,8 +248,8 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Lock
       }
     },
 
-    async claimLock(key, owner) {
-      return pubsub.claimLock(toRedisKey(key), owner)
+    async claimLock(key, owner, ttlMs) {
+      return pubsub.claimLock(toRedisKey(key), owner, ttlMs)
     },
 
     async releaseLock(key, owner) {

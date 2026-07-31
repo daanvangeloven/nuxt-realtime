@@ -1,7 +1,7 @@
 import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
 import type { ServerOptions } from 'engine.io'
-import type { Server } from 'socket.io'
+import type { Server, Socket } from 'socket.io'
 import type { ReactiveRedisDriverOptions } from './drivers/redis'
 
 declare module 'nitropack' {
@@ -26,6 +26,91 @@ declare module 'nitropack' {
      * ```
      */
     'nuxt-realtime:io': (io: Server) => void | Promise<void>
+
+    /**
+     * Called once per connection, right after a client-supplied `connectionId`
+     * is read from the handshake, before any `lock:*`/`storage:*` listeners
+     * are attached. Mutate `ctx.info` to attach real user data (e.g. looked up
+     * from a session) to the connection registry entry.
+     *
+     * This hook cannot reject the connection. Reject unauthenticated sockets
+     * in `nuxt-realtime:io`'s `io.use()` middleware instead, which runs earlier.
+     *
+     * @example
+     * ```ts
+     * // server/plugins/realtime-identify.ts
+     * export default defineNitroPlugin((nitroApp) => {
+     *   nitroApp.hooks.hook('nuxt-realtime:identify', async ({ connectionId, socket, info }) => {
+     *     info.user = await lookupUser(socket.handshake.auth.token)
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:identify': (ctx: { connectionId: string, socket: Socket, info: Record<string, unknown> }) => void | Promise<void>
+
+    /**
+     * Called before honoring a `lock:forceRelease` request. Set `ctx.allow = true`
+     * to permit it; force-release is denied by default when no handler is
+     * registered, or when the handler leaves `ctx.allow` as `false`.
+     *
+     * @example
+     * ```ts
+     * // server/plugins/realtime-force-release.ts
+     * export default defineNitroPlugin((nitroApp) => {
+     *   nitroApp.hooks.hook('nuxt-realtime:canForceRelease', (ctx) => {
+     *     ctx.allow = isAdmin(ctx.connectionId)
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:canForceRelease': (ctx: { key: string, connectionId: string | undefined, currentOwner: string | null, allow: boolean }) => void | Promise<void>
+
+    /**
+     * Called before a connection joins a room for the first time (via `room:join`,
+     * `presence:join`, or `lock:claim` with a `room`), the single checkpoint for per-room
+     * auth, instead of gating every handler individually. Allowed by default (unlike
+     * `nuxt-realtime:canForceRelease`, joining a room isn't inherently privileged); set
+     * `ctx.allow = false` to deny. Not re-run for a connection that's already a member.
+     *
+     * @example
+     * ```ts
+     * // server/plugins/realtime-room-auth.ts
+     * export default defineNitroPlugin((nitroApp) => {
+     *   nitroApp.hooks.hook('nuxt-realtime:canJoinRoom', async (ctx) => {
+     *     ctx.allow = await userCanAccessRoom(ctx.connectionId, ctx.roomId)
+     *   })
+     * })
+     * ```
+     */
+    'nuxt-realtime:canJoinRoom': (ctx: { roomId: string, connectionId: string, socket: Socket, allow: boolean }) => void | Promise<void>
+
+    /**
+     * Called once when a room's membership goes from 0 to 1, the natural place for
+     * provisioning logic (e.g. creating a database record for the room).
+     *
+     * @example
+     * ```ts
+     * nitroApp.hooks.hook('nuxt-realtime:roomCreated', async ({ roomId }) => {
+     *   await db.rooms.upsert({ id: roomId, createdAt: new Date() })
+     * })
+     * ```
+     */
+    'nuxt-realtime:roomCreated': (ctx: { roomId: string }) => void | Promise<void>
+
+    /**
+     * Called once when a room's membership goes from 1 to 0, either an explicit
+     * `room:leave` that empties it, or (after every member's disconnect grace period lapses
+     * without a reconnect) the connection-registry sweep. The natural place for teardown
+     * logic (e.g. archiving the room).
+     *
+     * @example
+     * ```ts
+     * nitroApp.hooks.hook('nuxt-realtime:roomEmpty', async ({ roomId }) => {
+     *   await db.rooms.archive(roomId)
+     * })
+     * ```
+     */
+    'nuxt-realtime:roomEmpty': (ctx: { roomId: string }) => void | Promise<void>
   }
 }
 
@@ -72,6 +157,7 @@ declare module '@nuxt/schema' {
         serverOptions?: ServerOptions
       }
       eventLogSize?: number
+      lock: { defaultTtl: number | undefined, staleGraceMs: number }
     }
   }
 }
@@ -212,6 +298,25 @@ export interface ModuleOptions {
      */
     eventLogSize?: number
   } | false
+
+  /**
+   * Lock-specific configuration. Server-only, none of this reaches the client.
+   */
+  lock?: LockOptions
+}
+
+export interface LockOptions {
+  /**
+   * Default TTL (ms) applied to a claim that doesn't specify its own `ttl`.
+   * @default undefined (no expiry)
+   */
+  defaultTtl?: number
+  /**
+   * How long (ms) to wait after a connection disconnects, giving it a chance
+   * to reconnect with the same `connectionId`, before releasing its locks.
+   * @default 10_000
+   */
+  staleGraceMs?: number
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -275,6 +380,10 @@ export default defineNuxtModule<ModuleOptions>({
         serverOptions: options.socketio?.serverOptions,
       },
       eventLogSize: options.devtools === false ? 200 : (options.devtools?.eventLogSize ?? 200),
+      lock: {
+        defaultTtl: options.lock?.defaultTtl,
+        staleGraceMs: options.lock?.staleGraceMs ?? 10_000,
+      },
     }
 
     // Add server plugin for socket.io initialization
