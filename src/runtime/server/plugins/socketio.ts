@@ -36,6 +36,14 @@ interface PubSubService {
 }
 
 const EVENT_CHANNEL = 'nuxt-realtime:events'
+const LEASE_PREFIX = '_lease:'
+
+/**
+ * Client-supplied storage keys must not reach into the internal `_lease:` namespace
+ */
+function isReservedKey(key: string): boolean {
+  return key.startsWith(LEASE_PREFIX)
+}
 
 /**
  * Returns all Socket.IO room names that should receive an event published to `channel`.
@@ -200,6 +208,10 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
+      if (isReservedKey(key)) {
+        callback(null)
+        return
+      }
       try {
         const value = await storage.getItem(key)
         callback(value)
@@ -211,6 +223,12 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:set', async ({ key, value }, callback) => {
+      if (isReservedKey(key)) {
+        if (callback) {
+          callback({ success: false, error: 'Key is reserved for internal use' })
+        }
+        return
+      }
       try {
         await storage.setItem(key, value)
         await touchLease(key)
@@ -236,6 +254,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:subscribe', async (key: string) => {
+      if (isReservedKey(key)) return
       socket.join(`key:${key}`)
       record('storage:subscribe', socket.id, key)
       try {
@@ -247,6 +266,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:unsubscribe', (key: string) => {
+      if (isReservedKey(key)) return
       socket.leave(`key:${key}`)
       record('storage:unsubscribe', socket.id, key)
     })
