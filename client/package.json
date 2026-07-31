@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "name": "nuxt-realtime-devtools-client",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxi dev",
+    "build": "nuxi generate"
+  },
+  "devDependencies": {
+    "@iconify-json/carbon": "^1.2.20",
+    "@nuxt/devtools-ui-kit": "^3.3.1",
+    "nuxt": "^4.4.7"
+  }
+}

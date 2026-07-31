@@ -60,6 +60,7 @@ declare module '@nuxt/schema' {
       socketPath: string | undefined
       cleanup: { heartbeatInterval: number, cleanupInterval: number, idleThreshold: number } | false
       logging: { level: string | undefined, format: string }
+      devtoolsEnabled: boolean
     }
   }
 
@@ -69,6 +70,7 @@ declare module '@nuxt/schema' {
       socketio?: {
         serverOptions?: ServerOptions
       }
+      eventLogSize?: number
     }
   }
 }
@@ -194,6 +196,21 @@ export interface ModuleOptions {
    * ```
    */
   logging?: LoggingOptions
+
+  /**
+   * Configures the "Realtime" Nuxt DevTools tab (connections, storage keys,
+   * event log). Only ever active in development. Set to `false` to disable.
+   *
+   * @default {}
+   */
+  devtools?: {
+    /**
+     * Max number of recent events kept in the in-memory event log shown in
+     * the DevTools tab.
+     * @default 200
+     */
+    eventLogSize?: number
+  } | false
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -202,7 +219,7 @@ export default defineNuxtModule<ModuleOptions>({
     configKey: 'nuxtRealtime',
   },
   defaults: {},
-  setup(options, nuxt) {
+  async setup(options, nuxt) {
     const resolver = createResolver(import.meta.url)
 
     if (options.redis && options.storage) {
@@ -234,6 +251,8 @@ export default defineNuxtModule<ModuleOptions>({
           ...options.cleanup,
         }
 
+    const devtoolsEnabled = options.devtools !== false && nuxt.options.dev
+
     // TODO: add warning if no ws server url is provided and nitro websockets aren't enabled
     nuxt.options.runtimeConfig.public.nuxtRealtime = {
       socketUrl: options.socketio?.serverUrl, // undefined = same origin
@@ -243,6 +262,7 @@ export default defineNuxtModule<ModuleOptions>({
         level: options.logging?.level, // undefined = auto (debug in dev, warn in prod)
         format: options.logging?.format ?? 'pretty',
       },
+      devtoolsEnabled,
     }
 
     nuxt.options.runtimeConfig.nuxtRealtime = {
@@ -250,6 +270,7 @@ export default defineNuxtModule<ModuleOptions>({
       socketio: {
         serverOptions: options.socketio?.serverOptions,
       },
+      eventLogSize: options.devtools === false ? 200 : (options.devtools?.eventLogSize ?? 200),
     }
 
     // Add server plugin for socket.io initialization
@@ -260,5 +281,10 @@ export default defineNuxtModule<ModuleOptions>({
 
     // Add composables for auto-import
     addImportsDir(resolver.resolve('./runtime/composables'))
+
+    if (devtoolsEnabled) {
+      const { setupDevtoolsTab } = await import('./devtools/setup')
+      setupDevtoolsTab(nuxt, resolver)
+    }
   },
 })
