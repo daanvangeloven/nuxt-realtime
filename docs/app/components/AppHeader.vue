@@ -40,6 +40,7 @@ const { header } = useAppConfig()
           { label: 'Docs', to: '/getting-started' },
           { label: 'Blocks', to: '/blocks' },
           { label: 'Components', to: '/components' },
+          { label: 'Blog', to: '/blog' },
         ]"
         class="ml-6 hidden lg:flex"
       />
