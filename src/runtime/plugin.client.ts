@@ -6,18 +6,27 @@ import { useRealtimeLogger } from './composables/useRealtimeLogger'
 
 const CONNECTION_ID_STORAGE_KEY = 'nuxt-realtime:connectionId'
 
+function generateId(): string {
+  try {
+    return crypto.randomUUID() // Throws on non https connection
+  }
+  catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  }
+}
+
 // A stable id that survives reconnects
 function getOrCreateConnectionId(): string {
   try {
     const existing = sessionStorage.getItem(CONNECTION_ID_STORAGE_KEY)
     if (existing) return existing
-    const generated = crypto.randomUUID()
+    const generated = generateId()
     sessionStorage.setItem(CONNECTION_ID_STORAGE_KEY, generated)
     return generated
   }
   catch {
     // fall back to an id that's stable for this page load only if sessionStorage is unavailable.
-    return crypto.randomUUID()
+    return generateId()
   }
 }
 

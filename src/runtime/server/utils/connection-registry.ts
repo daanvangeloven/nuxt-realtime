@@ -14,7 +14,7 @@ export interface ConnectionRegistry {
   reclaim: (connectionId: string, socketId: string) => Promise<boolean>
   lookup: (connectionId: string) => Promise<ConnectionRecord | null>
   /** Marks a connection as disconnected, starting its grace period. Storage write only, no timer. */
-  markStale: (connectionId: string) => Promise<void>
+  markStale: (connectionId: string, socketId: string) => Promise<void>
   isGraceExpired: (record: ConnectionRecord, now?: number) => boolean
   remove: (connectionId: string) => Promise<void>
   /** All connectionIds currently in the registry (active or stale), for the grace-period sweep. */
@@ -44,9 +44,9 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
       return (await storage.getItem<ConnectionRecord>(PREFIX + connectionId)) ?? null
     },
 
-    async markStale(connectionId) {
+    async markStale(connectionId, socketId) {
       const existing = await storage.getItem<ConnectionRecord>(PREFIX + connectionId)
-      if (!existing) return
+      if (!existing || existing.socketId !== socketId) return
       await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { ...existing, staleAt: Date.now() })
     },
 
@@ -59,8 +59,10 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
     },
 
     async listIds() {
-      const keys = await storage.getKeys()
-      return keys.filter(k => k.startsWith(PREFIX)).map(k => k.slice(PREFIX.length))
+      // Scoped to PREFIX so a CAS-capable driver (e.g. Redis) can SCAN just this namespace
+      // instead of the whole keyspace on every sweep tick.
+      const keys = await storage.getKeys(PREFIX)
+      return keys.map(k => k.slice(PREFIX.length))
     },
   }
 }

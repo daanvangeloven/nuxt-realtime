@@ -33,7 +33,7 @@ describe('ConnectionRegistry', () => {
 
   it('markStale sets staleAt without touching socketId/info', async () => {
     await registry.register('conn-1', 'socket-a', { name: 'Alice' })
-    await registry.markStale('conn-1')
+    await registry.markStale('conn-1', 'socket-a')
     const record = await registry.lookup('conn-1')
     expect(record?.staleAt).not.toBeNull()
     expect(record?.socketId).toBe('socket-a')
@@ -41,13 +41,24 @@ describe('ConnectionRegistry', () => {
   })
 
   it('markStale on an unknown connectionId is a no-op', async () => {
-    await registry.markStale('never-registered')
+    await registry.markStale('never-registered', 'socket-a')
     await expect(registry.lookup('never-registered')).resolves.toBeNull()
+  })
+
+  it('markStale ignores a disconnect for a socketId that has since been superseded by a reclaim', async () => {
+    await registry.register('conn-1', 'socket-a', { name: 'Alice' })
+    await registry.markStale('conn-1', 'socket-a')
+    await registry.reclaim('conn-1', 'socket-b')
+
+    // A late/reordered disconnect event for the old socket-a must not re-stale socket-b's record.
+    await registry.markStale('conn-1', 'socket-a')
+    const record = await registry.lookup('conn-1')
+    expect(record).toEqual({ socketId: 'socket-b', info: { name: 'Alice' }, staleAt: null })
   })
 
   it('reclaim clears staleness and updates the socketId, preserving info', async () => {
     await registry.register('conn-1', 'socket-a', { name: 'Alice' })
-    await registry.markStale('conn-1')
+    await registry.markStale('conn-1', 'socket-a')
 
     await expect(registry.reclaim('conn-1', 'socket-b')).resolves.toBe(true)
     const record = await registry.lookup('conn-1')
@@ -74,7 +85,7 @@ describe('ConnectionRegistry', () => {
 
   it('isGraceExpired is false just after going stale, true once staleGraceMs has passed', async () => {
     await registry.register('conn-1', 'socket-a')
-    await registry.markStale('conn-1')
+    await registry.markStale('conn-1', 'socket-a')
     const record = await registry.lookup('conn-1')
 
     expect(registry.isGraceExpired(record!)).toBe(false)

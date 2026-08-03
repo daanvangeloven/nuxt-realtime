@@ -153,17 +153,25 @@ describe('useRealtimeRoom', () => {
   })
 
   it('lock() scopes the key to this room, distinct from the same key in another room', async () => {
+    const other = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>(resolve => other.on('connect', () => resolve()))
+
     const roomA = useRealtimeRoom('project-a')
-    const roomB = useRealtimeRoom('project-b')
-
     const lockA = roomA.lock('doc-1')
-    const lockB = roomB.lock('doc-1')
-
     const ownedA = await lockA.claim()
-    const ownedB = await lockB.claim()
+
+    const ownedB = await new Promise<boolean>((resolve) => {
+      other.emit('lock:claim', { key: 'doc-1', room: 'project-b' }, (r: { owned: boolean }) => resolve(r.owned))
+    })
 
     expect(ownedA).toBe(true)
-    expect(ownedB).toBe(true) // different room -> different underlying key, no conflict
+    expect(ownedB).toBe(true) // different room -> different underlying key, no conflict with clientSocket's claim
+
+    const { locks } = roomA.locks()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(locks.value['doc-1']?.owner).toBe(clientSocket.id) // room A's lock is untouched by room B's claim
+
+    other.close()
   })
 
   it('locks() gives a bulk read-only snapshot of every lock tagged with this room', async () => {

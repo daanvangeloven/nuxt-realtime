@@ -219,7 +219,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   io.bind(engine)
 
-  io.on('connection', async (socket) => {
+  io.on('connection', (socket) => {
     logger.debug('Client connected:', socket.id)
     record('connect', socket.id)
 
@@ -232,13 +232,30 @@ export default defineNitroPlugin(async (nitroApp) => {
     // membership so a refresh/reconnect doesn't drop either. Opt-in: falls back to socket.id
     // when absent (in which case there's no reconnect-grace behavior, see disconnect below).
     let connectionId = socket.handshake?.auth?.connectionId as string | undefined
-    if (connectionId) {
+    if (connectionId !== undefined && !isValidKey(connectionId)) {
+      connectionId = undefined
+    }
+    let identity = connectionId ?? socket.id
+
+    // The identify/reclaim work below is async, but event listeners must be registered
+    // synchronously on connection or events a client emits right after connecting (before this
+    // resolves) would arrive with no listener and be silently dropped. Every handler below that
+    // touches `identity`/`connectionId` awaits this first; it resolves near-instantly when no
+    // connectionId was supplied.
+    const identityReady = (async () => {
+      if (!connectionId) return
       const identifyCtx = { connectionId, socket, info: {} as Record<string, unknown> }
       try {
         await nitroApp.hooks.callHook('nuxt-realtime:identify', identifyCtx)
       }
       catch (error) {
         logger.error('nuxt-realtime:identify hook failed:', error)
+      }
+      // A host app's identify hook can rebind connectionId to its own verified principal (e.g.
+      // derived from a session/JWT) instead of the raw client-supplied value, so a spoofed
+      // handshake connectionId can be rejected/replaced before it's used for anything.
+      if (typeof identifyCtx.connectionId === 'string' && identifyCtx.connectionId.length > 0) {
+        connectionId = identifyCtx.connectionId
       }
       const reclaimed = await registry.reclaim(connectionId, socket.id)
       if (!reclaimed) {
@@ -254,8 +271,8 @@ export default defineNitroPlugin(async (nitroApp) => {
           await registry.register(connectionId, socket.id, identifyCtx.info)
         }
       }
-    }
-    const identity = connectionId ?? socket.id
+      identity = connectionId ?? socket.id
+    })()
 
     const ownedLocks = new Set<string>()
     // Only consulted when connectionId is absent (see disconnect below). When present, the
@@ -270,27 +287,32 @@ export default defineNitroPlugin(async (nitroApp) => {
     // room, the first time it touches that room via any of the three. Returns whether the
     // caller is (or already was) a member.
     async function ensureRoomMembership(roomId: string): Promise<boolean> {
+      await identityReady
       const alreadyMember = await isRoomMember(storage, roomId, identity)
-      if (alreadyMember) return true
+      if (!alreadyMember) {
+        const ctx = { roomId, connectionId: identity, socket, allow: true }
+        try {
+          await nitroApp.hooks.callHook('nuxt-realtime:canJoinRoom', ctx)
+        }
+        catch (error) {
+          logger.error('nuxt-realtime:canJoinRoom hook failed:', error)
+          // A registered hook that throws is a bug in the host app, not "no hook registered":
+          // fail closed rather than silently falling through to the allow-by-default behavior.
+          ctx.allow = false
+        }
+        if (!ctx.allow) return false
 
-      const ctx = { roomId, connectionId: identity, socket, allow: true }
-      try {
-        await nitroApp.hooks.callHook('nuxt-realtime:canJoinRoom', ctx)
+        const { firstMember } = await joinRoom(storage, roomId, identity)
+        if (firstMember) {
+          await nitroApp.hooks.callHook('nuxt-realtime:roomCreated', { roomId })
+        }
       }
-      catch (error) {
-        logger.error('nuxt-realtime:canJoinRoom hook failed:', error)
-        // A registered hook that throws is a bug in the host app, not "no hook registered":
-        // fail closed rather than silently falling through to the allow-by-default behavior.
-        ctx.allow = false
-      }
-      if (!ctx.allow) return false
-
-      const { firstMember } = await joinRoom(storage, roomId, identity)
+      // Always (re)join the Socket.IO room, even when storage already considered this identity
+      // a member: Socket.IO room membership is per-socket and doesn't survive a reconnect, so a
+      // reconnecting socket with the same identity still needs `socket.join` re-run against its
+      // new socket instance, or it'll never actually receive this room's broadcasts.
       joinedRooms.add(roomId)
       socket.join(`room:${roomId}`)
-      if (firstMember) {
-        await nitroApp.hooks.callHook('nuxt-realtime:roomCreated', { roomId })
-      }
       return true
     }
 
@@ -386,6 +408,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           }
           return
         }
+        await identityReady
         const owned = await claimLock(storage, key, identity, ownerInfo, { room, ttl: ttl ?? defaultTtl })
         if (owned) {
           ownedLocks.add(key)
@@ -411,6 +434,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         return
       }
       try {
+        await identityReady
         const room = await getLockRoom(storage, key)
         const released = await releaseLock(storage, key, identity)
         if (released) {
@@ -453,8 +477,15 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('lock:subscribeRoom', async (room: string, callback) => {
-      socket.join(`lockroom:${room}`)
       try {
+        // Same authorization checkpoint as the write paths (room:join, presence:join,
+        // lock:claim(room)): without it any connected client could guess a room id and read
+        // every lock's owner + ownerInfo in it, which commonly carries app user data.
+        if (!isValidKey(room) || !(await ensureRoomMembership(room))) {
+          if (callback) callback({})
+          return
+        }
+        socket.join(`lockroom:${room}`)
         const keys = await getRoomKeys(storage, room)
         const snapshot: LockRoomSnapshot = {}
         for (const key of keys) {
@@ -481,8 +512,9 @@ export default defineNitroPlugin(async (nitroApp) => {
         return
       }
       try {
+        await identityReady
         const currentOwner = await getLockOwner(storage, key)
-        const ctx = { key, connectionId, currentOwner, allow: false }
+        const ctx = { key, connectionId: identity, currentOwner, allow: false }
         await nitroApp.hooks.callHook('nuxt-realtime:canForceRelease', ctx)
 
         if (currentOwner === null) {
@@ -539,6 +571,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         return
       }
       try {
+        await identityReady
         const existed = await leavePresence(storage, room, identity)
         presenceRooms.delete(room)
         socket.leave(`presence:${room}`)
@@ -554,8 +587,15 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('presence:subscribeRoom', async (room: string, callback) => {
-      socket.join(`presence:${room}`)
       try {
+        // Same authorization checkpoint as the write paths: without it any connected client
+        // could guess a room id and read every member's id + info, which commonly carries app
+        // user data.
+        if (!isValidKey(room) || !(await ensureRoomMembership(room))) {
+          if (callback) callback({})
+          return
+        }
+        socket.join(`presence:${room}`)
         const snapshot = await getPresenceSnapshot(storage, room)
         if (callback) callback(snapshot)
       }
@@ -591,6 +631,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         return
       }
       try {
+        await identityReady
         const { left, nowEmpty } = await leaveRoom(storage, roomId, identity)
         joinedRooms.delete(roomId)
         socket.leave(`room:${roomId}`)
@@ -607,6 +648,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     socket.on('disconnect', async () => {
       try {
+        await identityReady
         if (connectionId) {
           // Give the client a grace period to reconnect with the same connectionId before
           // releasing anything. The periodic sweep below does the actual release once the
@@ -614,7 +656,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           // also leaves presence/room-membership in every room this connection was part of
           // (via the storage-backed reverse indexes in presence.ts/room-registry.ts), so
           // nothing to do here for presence/rooms.
-          await registry.markStale(connectionId)
+          await registry.markStale(connectionId, socket.id)
           return
         }
         await Promise.all([...ownedLocks].map(async (key) => {

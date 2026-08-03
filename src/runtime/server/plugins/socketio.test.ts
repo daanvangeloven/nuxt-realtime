@@ -446,7 +446,7 @@ function createTestServer() {
     socket.on('disconnect', () => {
       ownedLocks.forEach((key) => {
         storage.delete(`_lock:${key}`)
-        storage.delete(`_lockname:${key}`)
+        storage.delete(`_lockinfo:${key}`)
         socket.to(`lock:${key}`).emit('lock:changed', { key, owner: null })
       })
       ownedLocks.clear()

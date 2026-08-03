@@ -84,15 +84,21 @@ export function useRealtimeRoom(roomId: string): UseRealtimeRoomReturn {
     })
   }
 
+  const handleDisconnect = () => {
+    joined.value = false
+  }
+
   if (socket) {
     join()
     // Socket.IO rooms don't survive a reconnect, so the join has to be redone.
     socket.on('connect', join)
+    socket.on('disconnect', handleDisconnect)
   }
 
   onUnmounted(() => {
     if (!socket) return
     socket.off('connect', join)
+    socket.off('disconnect', handleDisconnect)
     // Best-effort: don't block unmount on a server round-trip.
     socket.emit('room:leave', roomId, () => {})
   })

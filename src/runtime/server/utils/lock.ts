@@ -126,7 +126,9 @@ export async function claimLock(storage: Storage, key: string, owner: string, ow
 
   if (claimed) {
     await touchLease(storage, lockKey)
-    await storage.setItem(`_lockinfo:${key}`, ownerInfo ?? null)
+    if (ownerInfo !== undefined) {
+      await storage.setItem(`_lockinfo:${key}`, ownerInfo)
+    }
     await tagOwner(storage, key, owner)
     if (opts.room) {
       await tagRoom(storage, key, opts.room)
@@ -152,6 +154,7 @@ export async function releaseLock(storage: Storage, key: string, owner: string):
   const indexedOwner = await storage.getItem<string>(`_lockowner:${key}`)
   if (released || indexedOwner === owner) {
     await storage.removeItem(`_lockinfo:${key}`)
+    await storage.removeItem(`_lease:${lockKey}`)
     await untagRoom(storage, key)
     await untagOwner(storage, key)
   }
@@ -166,10 +169,9 @@ export async function getLockOwner(storage: Storage, key: string): Promise<strin
   const lockKey = `_lock:${key}`
   const { driver } = resolveLockDriver(storage, lockKey)
 
-  // Driver-capable locks store the raw owner string (see reactiveRedisDriver); Redis enforces
-  // its own TTL natively, so an expired lock is simply already gone by the time we read it.
+  // Driver-capable locks store the raw owner string (see reactiveRedisDriver)
   if (driver.claimLock) {
-    return (await storage.getItem<string>(lockKey)) ?? null
+    return ((await storage.getItemRaw(lockKey)) as string | null) ?? null
   }
   // Fallback path stores `{ owner, expiresAt? }` (see claimLockFallback above).
   const current = await storage.getItem<FallbackLockRecord>(lockKey)

@@ -12,9 +12,10 @@ const STORAGE_CHANNEL = 'nuxt-realtime:watch'
 const CLAIM_LOCK_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current == false or current == ARGV[1] then
-  redis.call('SET', KEYS[1], ARGV[1])
   if tonumber(ARGV[2]) > 0 then
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  else
+    redis.call('SET', KEYS[1], ARGV[1], 'KEEPTTL')
   end
   return 1
 end

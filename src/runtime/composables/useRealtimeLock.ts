@@ -126,10 +126,10 @@ export function useRealtimeLock<TOwnerInfo = string>(key: string, options: UseRe
       socket
         .timeout(ACK_TIMEOUT)
         .emit('lock:release', { key, changed: releaseOptions?.changed ?? false, meta: releaseOptions?.meta }, (err: Error, response: LockReleaseResponse) => {
-          if (err || !response?.success) {
+          if (err || response?.error) {
             logger?.error('Failed to release lock:', err || response?.error)
           }
-          else {
+          else if (response?.success) {
             locked.value = false
             ownedByMe.value = false
             ownerInfo.value = null

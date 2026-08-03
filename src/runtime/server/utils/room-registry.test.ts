@@ -107,6 +107,33 @@ describe('room-registry', () => {
       await leaveRoom(storage, 'room-a', 'conn-1')
       await expect(getRoomsForConnection(storage, 'conn-1')).resolves.toEqual(['room-b'])
     })
+
+    it('concurrent last-member leaves report nowEmpty exactly once on a driver with real atomic claimLock (e.g. Redis)', async () => {
+      const claims = new Map<string, string>()
+      const casDriver = {
+        ...memoryDriver(),
+        claimLock: async (key: string, owner: string) => {
+          if (claims.has(key) && claims.get(key) !== owner) return false
+          claims.set(key, owner)
+          return true
+        },
+      }
+      const root = createStorage({ driver: memoryDriver() })
+      root.mount('nuxt-realtime', casDriver)
+      const scoped = prefixStorage(root, 'nuxt-realtime')
+
+      await Promise.all([
+        joinRoom(scoped, 'room-a', 'conn-1'),
+        joinRoom(scoped, 'room-a', 'conn-2'),
+        joinRoom(scoped, 'room-a', 'conn-3'),
+      ])
+      const results = await Promise.all([
+        leaveRoom(scoped, 'room-a', 'conn-1'),
+        leaveRoom(scoped, 'room-a', 'conn-2'),
+        leaveRoom(scoped, 'room-a', 'conn-3'),
+      ])
+      expect(results.filter(r => r.nowEmpty)).toHaveLength(1)
+    })
   })
 
   describe('getRoomsForConnection', () => {
