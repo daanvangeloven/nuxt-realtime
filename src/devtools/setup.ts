@@ -40,21 +40,24 @@ export function setupDevtoolsTab(nuxt: Nuxt, resolver: Resolver): void {
   }, nuxt)
 
   onDevToolsInitialized(() => {
-    const devServerUrl = nuxt.options.devServer.url
-
     // Thin $fetch proxies to the dev-only Nitro route registered in
     // socketio.ts. This module (build-time, Kit-side) and the bundled Nitro
     // server don't share a JS module graph, so an actual HTTP hop is used
     // instead of reading server state directly, see the docs for why.
+    //
+    // `nuxt.options.devServer.url` is read fresh on every call (rather than
+    // captured once here) because it's still the pre-listen default when
+    // this callback fires; the CLI only patches it to the real bound
+    // address once the `listen` hook resolves, which can land after this.
     extendServerRpc(RPC_NAMESPACE, {
       async getConnections() {
-        return $fetch(DEVTOOLS_ROUTE, { baseURL: devServerUrl, query: { type: 'connections' } })
+        return $fetch(DEVTOOLS_ROUTE, { baseURL: nuxt.options.devServer.url, query: { type: 'connections' } })
       },
       async getStorageSnapshot() {
-        return $fetch(DEVTOOLS_ROUTE, { baseURL: devServerUrl, query: { type: 'storage' } })
+        return $fetch(DEVTOOLS_ROUTE, { baseURL: nuxt.options.devServer.url, query: { type: 'storage' } })
       },
       async getEventLog(sinceId?: number) {
-        return $fetch(DEVTOOLS_ROUTE, { baseURL: devServerUrl, query: { type: 'events', sinceId } })
+        return $fetch(DEVTOOLS_ROUTE, { baseURL: nuxt.options.devServer.url, query: { type: 'events', sinceId } })
       },
     }, nuxt)
   }, nuxt)

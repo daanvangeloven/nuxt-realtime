@@ -1,4 +1,5 @@
 import type { Storage } from 'unstorage'
+import { claimOnce } from './lock'
 
 export interface ConnectionRecord {
   socketId: string
@@ -22,6 +23,8 @@ export interface ConnectionRegistry {
 }
 
 const PREFIX = '_conn:'
+const RECLAIM_PREFIX = '_reclaiming:'
+const RECLAIM_MUTEX_TTL_MS = 5000
 
 export function createConnectionRegistry(storage: Storage, options: { staleGraceMs: number }): ConnectionRegistry {
   const { staleGraceMs } = options
@@ -32,12 +35,25 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
     },
 
     async reclaim(connectionId, socketId) {
-      const existing = await storage.getItem<ConnectionRecord>(PREFIX + connectionId)
-      // A connectionId is client-supplied, so a live (non-stale) record belongs to a socket
-      // that's still connected: refuse to hand its identity to a different socket.
-      if (!existing || existing.staleAt === null) return false
-      await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { ...existing, socketId, staleAt: null })
-      return true
+      // Concurrent reconnects can both read the same stale record before either writes back,
+      // so the read-check-write below is only safe done by one claimant at a time. `claimOnce`
+      // (real atomic CAS on a CAS-capable driver, e.g. Redis) guards it as a mutex, same
+      // pattern room-registry.ts uses for its own claim/close critical sections.
+      const mutexKey = RECLAIM_PREFIX + connectionId
+      const wonMutex = await claimOnce(storage, mutexKey, socketId, RECLAIM_MUTEX_TTL_MS)
+      if (!wonMutex) return false
+
+      try {
+        const existing = await storage.getItem<ConnectionRecord>(PREFIX + connectionId)
+        // A connectionId is client-supplied, so a live (non-stale) record belongs to a socket
+        // that's still connected: refuse to hand its identity to a different socket.
+        if (!existing || existing.staleAt === null) return false
+        await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { ...existing, socketId, staleAt: null })
+        return true
+      }
+      finally {
+        await storage.removeItem(mutexKey)
+      }
     },
 
     async lookup(connectionId) {

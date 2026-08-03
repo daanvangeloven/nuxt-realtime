@@ -89,6 +89,12 @@ describe('lock - generic fallback (memory driver, no claimLock/releaseLock suppo
     await expect(getLockOwnerInfo(storage, 'never-claimed')).resolves.toBeNull()
   })
 
+  it('re-claiming without ownerInfo preserves the previously stored info (e.g. a TTL-refresh heartbeat)', async () => {
+    await claimLock(storage, 'doc-1', 'alice', 'Alice')
+    await claimLock(storage, 'doc-1', 'alice') // refresh claim, omits ownerInfo
+    await expect(getLockOwnerInfo(storage, 'doc-1')).resolves.toBe('Alice')
+  })
+
   it('clears the owner info on release', async () => {
     await claimLock(storage, 'doc-1', 'alice', 'Alice')
     await releaseLock(storage, 'doc-1', 'alice')

@@ -164,6 +164,21 @@ describe('useRealtimeLock', () => {
     expect(lock.locked.value).toBe(false)
   })
 
+  it('release() on a lock this client does not own is a documented silent no-op', async () => {
+    const other = ioClient(`http://localhost:${serverPort}`)
+    await new Promise<void>(resolve => other.on('connect', () => resolve()))
+    await new Promise<void>(resolve => other.emit('lock:claim', { key: 'doc-4b' }, () => resolve()))
+
+    const lock = useRealtimeLock('doc-4b')
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Resolves without throwing; ownership state (never held by this client) is unaffected.
+    await expect(lock.release()).resolves.toBeUndefined()
+    expect(lock.ownedByMe.value).toBe(false)
+
+    other.disconnect()
+  })
+
   it('reflects a lock already held by another client as locked but not owned', async () => {
     const other = ioClient(`http://localhost:${serverPort}`)
     await new Promise<void>(resolve => other.on('connect', () => resolve()))
