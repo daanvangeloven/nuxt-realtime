@@ -13,6 +13,50 @@ authors:
 
 Nuxt Realtime 0.2 is out. Here's what's new since the last release.
 
+## Rooms
+
+[`useRealtimeRoom`](/composables/userealtimeroom) ties state, events, presence, and locks together under one room id, with server-side lifecycle hooks and a single auth checkpoint instead of gating every handler individually.
+
+```vue
+<script setup lang="ts">
+const room = useRealtimeRoom('document:123')
+
+const doc = room.state('content', '')
+const { members } = room.presence({ info: { name: 'Alice' } })
+const { claim, release, ownedByMe } = room.lock('editing')
+</script>
+```
+
+See the [rooms docs](/composables/userealtimeroom) for details.
+
+## Locking
+
+[`useRealtimeLock`](/composables/userealtimelock) claims exclusive ownership of a key across all connected clients, so only one user edits a record or drags a card at a time.
+
+```vue
+<script setup lang="ts">
+const { claim, release, ownedByMe, locked } = useRealtimeLock('document:123')
+</script>
+```
+
+[`useRealtimeLockRoom`](/composables/userealtimelockroom) pairs with it for a bulk, read-only view of every lock tagged with a room, without subscribing to each key individually.
+
+See the [locking docs](/composables/userealtimelock) for details.
+
+## Presence
+
+[`useRealtimePresence`](/composables/userealtimepresence) tracks which clients are currently present in a room, with optional info about each one (a name, avatar, cursor position). Useful for "who's viewing this page" indicators and avatar stacks.
+
+```vue
+<script setup lang="ts">
+const { members, join, leave } = useRealtimePresence('document:123', {
+  info: { name: 'Alice', avatarUrl: '/alice.png' },
+})
+</script>
+```
+
+See the [presence docs](/composables/userealtimepresence) for details.
+
 ## Realtime DevTools
 
 ![image](/realtime-devtools.png)
@@ -45,50 +89,6 @@ export default defineNuxtConfig({
 
 See the [configuration docs](/getting-started/configuration) for details.
 
-## Presence
-
-[`useRealtimePresence`](/composables/userealtimepresence) tracks which clients are currently present in a room, with optional info about each one (a name, avatar, cursor position). Useful for "who's viewing this page" indicators and avatar stacks.
-
-```vue
-<script setup lang="ts">
-const { members, join, leave } = useRealtimePresence('document:123', {
-  info: { name: 'Alice', avatarUrl: '/alice.png' },
-})
-</script>
-```
-
-See the [presence docs](/composables/userealtimepresence) for details.
-
-## Locking
-
-[`useRealtimeLock`](/composables/userealtimelock) claims exclusive ownership of a key across all connected clients, so only one user edits a record or drags a card at a time.
-
-```vue
-<script setup lang="ts">
-const { claim, release, ownedByMe, locked } = useRealtimeLock('document:123')
-</script>
-```
-
-[`useRealtimeLockRoom`](/composables/userealtimelockroom) pairs with it for a bulk, read-only view of every lock tagged with a room, without subscribing to each key individually.
-
-See the [locking docs](/composables/userealtimelock) for details.
-
-## Rooms
-
-[`useRealtimeRoom`](/composables/userealtimeroom) ties state, events, presence, and locks together under one room id, with server-side lifecycle hooks and a single auth checkpoint instead of gating every handler individually.
-
-```vue
-<script setup lang="ts">
-const room = useRealtimeRoom('document:123')
-
-const doc = room.state('content', '')
-const { members } = room.presence({ info: { name: 'Alice' } })
-const { claim, release, ownedByMe } = room.lock('editing')
-</script>
-```
-
-See the [rooms docs](/composables/userealtimeroom) for details.
-
 ## Configurable Socket.IO path
 
 `socketio.path` lets you move the Socket.IO endpoint off the `/socket.io` default (useful behind a reverse proxy that already owns that path). The client and server now derive the same path from this single option.
@@ -96,5 +96,9 @@ See the [rooms docs](/composables/userealtimeroom) for details.
 ## Fixes
 
 - Client-supplied storage keys can no longer read or write the internal `_lease:` namespace used for storage expiry.
+
+## In progress
+
+Next up: splitting the realtime server into a standalone deployable process, so it can run on a long-lived host like Railway while the Nuxt frontend stays on serverless/edge platforms like Vercel or Netlify.
 
 

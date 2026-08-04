@@ -64,6 +64,7 @@ useSeoMeta({
           :variant="index === 0 ? 'outline' : 'subtle'"
           :orientation="index === 0 ? 'horizontal' : 'vertical'"
           :class="[index === 0 && 'col-span-full']"
+          :ui="index === 0 ? { body: 'lg:px-6' } : undefined"
         />
       </UBlogPosts>
     </UPageBody>
