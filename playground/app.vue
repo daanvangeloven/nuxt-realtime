@@ -28,6 +28,23 @@ const counter = useRealtimeState('counter', 0, {
 
       <PresenceAvatarDemo class="my-4" />
 
+      <div class="border rounded-lg p-4 my-4">
+        <h2 class="text-lg font-bold mb-4">
+          Connection Status / Guard
+        </h2>
+        <RealtimeConnectionStatus class="mb-2" />
+        <RealtimeGuard>
+          <p class="text-sm">
+            Connected — this only shows while the socket is up.
+          </p>
+          <template #fallback>
+            <p class="text-sm text-gray-400">
+              Not connected.
+            </p>
+          </template>
+        </RealtimeGuard>
+      </div>
+
       <LockDemo class="my-4" />
 
       <RoomDemo class="my-4" />
