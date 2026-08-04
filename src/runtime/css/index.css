@@ -1,0 +1,9 @@
+/*
+ * Tells consuming apps' Tailwind build where to find this module's utility classes.
+ * `theme/*.ts` and `components/*.vue` are only reachable through the `node_modules`
+ * workspace symlink Nuxt resolves this module through, and Tailwind v4's automatic
+ * content detection never scans `node_modules` — without this, classes referenced only
+ * here (e.g. presence-avatar's status dot color) are never generated.
+ */
+@source "../components";
+@source "../theme";

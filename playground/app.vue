@@ -26,6 +26,8 @@ const counter = useRealtimeState('counter', 0, {
 
       <PresenceDemo class="my-4" />
 
+      <PresenceAvatarDemo class="my-4" />
+
       <LockDemo class="my-4" />
 
       <RoomDemo class="my-4" />

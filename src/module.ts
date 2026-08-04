@@ -1,4 +1,4 @@
-import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, logger } from '@nuxt/kit'
+import { defineNuxtModule, addPlugin, createResolver, addServerPlugin, addImportsDir, addComponentsDir, logger } from '@nuxt/kit'
 import type { StorageMounts } from 'nitropack'
 import type { ServerOptions } from 'engine.io'
 import type { Server, Socket } from 'socket.io'
@@ -303,6 +303,15 @@ export interface ModuleOptions {
    * Lock-specific configuration. Server-only, none of this reaches the client.
    */
   lock?: LockOptions
+
+  /**
+   * Registers the default styled component layer (`<RealtimePresenceAvatar>` etc.), which
+   * reads Nuxt UI-compatible CSS variables but has no hard dependency on `@nuxt/ui`. Set to
+   * `false` if you only want the headless composables (`usePresenceAvatar` etc.) and plan to
+   * ship your own markup entirely.
+   * @default true
+   */
+  ui?: boolean
 }
 
 export interface LockOptions {
@@ -394,6 +403,13 @@ export default defineNuxtModule<ModuleOptions>({
 
     // Add composables for auto-import
     addImportsDir(resolver.resolve('./runtime/composables'))
+
+    if (options.ui !== false) {
+      addComponentsDir({
+        path: resolver.resolve('./runtime/components'),
+        prefix: 'Realtime',
+      })
+    }
 
     if (devtoolsEnabled) {
       const { setupDevtoolsTab } = await import('./devtools/setup')
