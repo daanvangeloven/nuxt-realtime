@@ -70,35 +70,19 @@ describe('ConnectionRegistry', () => {
     await expect(registry.lookup('conn-1')).resolves.toBeNull()
   })
 
-  it('concurrent reclaims of the same stale connectionId report exactly one winner on a driver with real atomic claimLock (e.g. Redis)', async () => {
-    // A minimal synchronous CAS driver, standing in for the real Lua-script atomicity
-    // reactiveRedisDriver provides, proves reclaim is genuinely race-free once the underlying
-    // driver can claim atomically. On the naive fallback driver this is best-effort, same
-    // documented tradeoff as claimLock itself.
-    const claims = new Map<string, string>()
-    const casDriver = {
-      ...memoryDriver(),
-      claimLock: async (key: string, owner: string) => {
-        if (claims.has(key) && claims.get(key) !== owner) return false
-        claims.set(key, owner)
-        return true
-      },
-    }
-    const root = createStorage({ driver: memoryDriver() })
-    root.mount('nuxt-realtime', casDriver)
-    const scoped = prefixStorage(root, 'nuxt-realtime')
-    const casRegistry = createConnectionRegistry(scoped, { staleGraceMs: 50 })
-
-    await casRegistry.register('conn-1', 'socket-a', { name: 'Alice' })
-    await casRegistry.markStale('conn-1', 'socket-a')
+  it('concurrent reclaims of the same stale connectionId report exactly one winner', async () => {
+    // The reclaim mutex is claimOnce's optimistic write-then-verify, race-free under
+    // Promise.all on any storage driver, plain memory included (see lock.test.ts).
+    await registry.register('conn-1', 'socket-a', { name: 'Alice' })
+    await registry.markStale('conn-1', 'socket-a')
 
     const results = await Promise.all([
-      casRegistry.reclaim('conn-1', 'socket-b'),
-      casRegistry.reclaim('conn-1', 'socket-c'),
+      registry.reclaim('conn-1', 'socket-b'),
+      registry.reclaim('conn-1', 'socket-c'),
     ])
 
     expect(results.filter(Boolean)).toHaveLength(1)
-    const record = await casRegistry.lookup('conn-1')
+    const record = await registry.lookup('conn-1')
     expect(record?.staleAt).toBeNull()
     expect(['socket-b', 'socket-c']).toContain(record?.socketId)
   })

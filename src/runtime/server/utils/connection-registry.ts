@@ -37,8 +37,8 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
     async reclaim(connectionId, socketId) {
       // Concurrent reconnects can both read the same stale record before either writes back,
       // so the read-check-write below is only safe done by one claimant at a time. `claimOnce`
-      // (real atomic CAS on a CAS-capable driver, e.g. Redis) guards it as a mutex, same
-      // pattern room-registry.ts uses for its own claim/close critical sections.
+      // (optimistic write-then-verify, race-free regardless of storage driver) guards it as a
+      // mutex, same pattern room-registry.ts uses for its own claim/close critical sections.
       const mutexKey = RECLAIM_PREFIX + connectionId
       const wonMutex = await claimOnce(storage, mutexKey, socketId, RECLAIM_MUTEX_TTL_MS)
       if (!wonMutex) return false

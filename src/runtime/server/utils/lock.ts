@@ -1,13 +1,4 @@
-import type { Driver, Storage } from 'unstorage'
-
-/**
- * Drivers may implement these for real cross-process atomic compare-and-set.
- * Without them, claimLock()/releaseLock() fall back to a naive getItem/setItem sequence.
- */
-export interface LockCapableDriver extends Driver {
-  claimLock?: (key: string, owner: string, ttlMs?: number) => Promise<boolean>
-  releaseLock?: (key: string, owner: string) => Promise<boolean>
-}
+import type { Storage } from 'unstorage'
 
 export interface ClaimLockOptions {
   /** Opaque group tag for bulk presence via lock:subscribeRoom. Only touched when explicitly set. */
@@ -21,42 +12,12 @@ interface FallbackLockRecord {
   expiresAt?: number
 }
 
-// Matches the mount base used by useStorage('nuxt-realtime')
-const STORAGE_PREFIX = 'nuxt-realtime:'
-
-function resolveLockDriver(storage: Storage, lockKey: string): { driver: LockCapableDriver, relativeKey: string } {
-  const fullKey = STORAGE_PREFIX + lockKey
-  const { driver, base } = storage.getMount(fullKey)
-  return { driver: driver as LockCapableDriver, relativeKey: fullKey.slice(base.length) }
-}
-
 export async function touchLease(storage: Storage, key: string): Promise<void> {
   await storage.setItem(`_lease:${key}`, { lastSeen: Date.now() })
 }
 
 function isExpired(record: FallbackLockRecord | null | undefined): boolean {
   return !!record && record.expiresAt !== undefined && Date.now() > record.expiresAt
-}
-
-// naive getItem -> setItem fallback in case claimLock and releaseLock aren't implemented by the chosen driver.
-// Lazily treats an expired record as free rather than requiring an active sweep.
-async function claimLockFallback(storage: Storage, lockKey: string, owner: string, ttl?: number): Promise<boolean> {
-  const current = await storage.getItem<FallbackLockRecord>(lockKey)
-  if (current && current.owner !== owner && !isExpired(current)) {
-    return false
-  }
-  const expiresAt = ttl ? Date.now() + ttl : undefined
-  await storage.setItem(lockKey, expiresAt !== undefined ? { owner, expiresAt } : { owner })
-  return true
-}
-
-async function releaseLockFallback(storage: Storage, lockKey: string, owner: string): Promise<boolean> {
-  const current = await storage.getItem<FallbackLockRecord>(lockKey)
-  if (!current || current.owner !== owner) {
-    return false
-  }
-  await storage.removeItem(lockKey)
-  return true
 }
 
 // Room membership is stored one key per member (`_roomkeys:{room}:{key}`) rather than a
@@ -97,19 +58,20 @@ async function tagOwner(storage: Storage, key: string, owner: string): Promise<v
 }
 
 /**
- * Atomic (on a CAS-capable driver, e.g. Redis) compare-and-set claim of `key` by `claimant`,
- * the pure primitive `claimLock` builds on. Exposed so other features that need a real "only
- * one caller wins" claim (e.g. room-registry.ts's room-creation detection) can reuse the same
- * driver-capability-detection instead of re-deriving their own, non-atomic version of it.
- *
- * On a driver without native CAS, this is a best-effort getItem->setItem sequence, same
- * documented tradeoff as `claimLock` itself on the fallback path (see `claimLockFallback`).
+ * Optimistic write-then-verify claim of `key` by `claimant`, the pure primitive `claimLock`
+ * builds on. Exposed so other features that need a real "only one caller wins" claim (e.g.
+ * room-registry.ts's room-creation detection) can reuse it instead of re-deriving their own.
  */
 export async function claimOnce(storage: Storage, key: string, claimant: string, ttlMs?: number): Promise<boolean> {
-  const { driver, relativeKey } = resolveLockDriver(storage, key)
-  return driver.claimLock
-    ? driver.claimLock(relativeKey, claimant, ttlMs)
-    : claimLockFallback(storage, key, claimant, ttlMs)
+  const current = await storage.getItem<FallbackLockRecord>(key)
+  if (current && current.owner !== claimant && !isExpired(current)) {
+    return false
+  }
+  const expiresAt = ttlMs ? Date.now() + ttlMs : undefined
+  await storage.setItem(key, expiresAt !== undefined ? { owner: claimant, expiresAt } : { owner: claimant })
+
+  const confirm = await storage.getItem<FallbackLockRecord>(key)
+  return confirm?.owner === claimant
 }
 
 /**
@@ -142,15 +104,15 @@ export async function claimLock(storage: Storage, key: string, owner: string, ow
  */
 export async function releaseLock(storage: Storage, key: string, owner: string): Promise<boolean> {
   const lockKey = `_lock:${key}`
-  const { driver, relativeKey } = resolveLockDriver(storage, lockKey)
+  const current = await storage.getItem<FallbackLockRecord>(lockKey)
+  const released = !!current && current.owner === owner
+  if (released) {
+    await storage.removeItem(lockKey)
+  }
 
-  const released = driver.releaseLock
-    ? await driver.releaseLock(relativeKey, owner)
-    : await releaseLockFallback(storage, lockKey, owner)
-
-  // Also clean up bookkeeping when the lock already expired on its own (native TTL or lazy
-  // fallback expiry) rather than being explicitly released: otherwise the owner index and
-  // stale info/room tags from that claim would never get cleared.
+  // Also clean up bookkeeping when the lock already expired on its own (lazy expiry) rather
+  // than being explicitly released: otherwise the owner index and stale info/room tags from
+  // that claim would never get cleared.
   const indexedOwner = await storage.getItem<string>(`_lockowner:${key}`)
   if (released || indexedOwner === owner) {
     await storage.removeItem(`_lockinfo:${key}`)
@@ -162,18 +124,11 @@ export async function releaseLock(storage: Storage, key: string, owner: string):
 }
 
 /**
- * Reads the current owner of a lock without claiming it, or `null` if it's free
- * (including a lock whose TTL has lapsed on the fallback/naive driver path).
+ * Reads the current owner of a lock without claiming it, or `null` if it's free (including a
+ * lock whose TTL has lapsed).
  */
 export async function getLockOwner(storage: Storage, key: string): Promise<string | null> {
   const lockKey = `_lock:${key}`
-  const { driver } = resolveLockDriver(storage, lockKey)
-
-  // Driver-capable locks store the raw owner string (see reactiveRedisDriver)
-  if (driver.claimLock) {
-    return ((await storage.getItemRaw(lockKey)) as string | null) ?? null
-  }
-  // Fallback path stores `{ owner, expiresAt? }` (see claimLockFallback above).
   const current = await storage.getItem<FallbackLockRecord>(lockKey)
   if (isExpired(current)) return null
   return current?.owner ?? null

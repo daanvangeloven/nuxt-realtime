@@ -24,6 +24,12 @@ const counter = useRealtimeState('counter', 0, {
 
       <EventsDemo class="my-4" />
 
+      <PresenceDemo class="my-4" />
+
+      <LockDemo class="my-4" />
+
+      <RoomDemo class="my-4" />
+
       <Chatfeed />
     </div>
   </UApp>

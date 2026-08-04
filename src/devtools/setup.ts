@@ -25,6 +25,9 @@ function fetchDevtoolsJson(baseURL: string, query: Record<string, string | numbe
   }
 
   const get = url.protocol === 'https:' ? httpsGet : httpGet
+  // codeql[js/disabling-certificate-validation]: `baseURL` is always `nuxt.options.devServer.url`,
+  // this module's own dev server address, not attacker-controlled input, so there is no MITM
+  // target to validate against, only a possible self-signed cert (see comment above).
   const options = url.protocol === 'https:' ? { rejectUnauthorized: false } : {}
 
   return new Promise((resolve, reject) => {
@@ -95,6 +98,15 @@ export function setupDevtoolsTab(nuxt: Nuxt, resolver: Resolver): void {
       },
       async getEventLog(sinceId?: number) {
         return fetchDevtoolsJson(nuxt.options.devServer.url, { type: 'events', sinceId })
+      },
+      async getLockSnapshot() {
+        return fetchDevtoolsJson(nuxt.options.devServer.url, { type: 'locks' })
+      },
+      async getPresenceOverview() {
+        return fetchDevtoolsJson(nuxt.options.devServer.url, { type: 'presence' })
+      },
+      async getRoomMembershipSnapshot() {
+        return fetchDevtoolsJson(nuxt.options.devServer.url, { type: 'roomMembers' })
       },
     }, nuxt)
   }, nuxt)

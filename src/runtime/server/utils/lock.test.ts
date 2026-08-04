@@ -9,14 +9,14 @@ function wait(ms: number) {
 
 // Mirrors how the plugin obtains its storage: a root storage with a dedicated
 // "nuxt-realtime" mount, accessed through a prefixed view (see useStorage('nuxt-realtime')
-// in socketio.ts). This exercises the real getMount()/prefix-stripping path rather than a mock.
+// in socketio.ts).
 function createTestStorage(): Storage {
   const root = createStorage({ driver: memoryDriver() })
   root.mount('nuxt-realtime', memoryDriver())
   return prefixStorage(root, 'nuxt-realtime')
 }
 
-describe('lock - generic fallback (memory driver, no claimLock/releaseLock support)', () => {
+describe('lock', () => {
   let storage: Storage
 
   beforeEach(() => {
@@ -37,6 +37,20 @@ describe('lock - generic fallback (memory driver, no claimLock/releaseLock suppo
     await claimLock(storage, 'doc-1', 'alice')
     await expect(claimLock(storage, 'doc-1', 'bob')).resolves.toBe(false)
     await expect(getLockOwner(storage, 'doc-1')).resolves.toBe('alice')
+  })
+
+  it('concurrent claims for the same free key report exactly one winner', async () => {
+    // Under Promise.all, all three calls run their first getItem synchronously before any
+    // resolves, so all three see "free"; the three setItem writes then run in call order (each
+    // overwriting the last); the three verify-reads then run last, so only the *last* writer's
+    // owner is what's in storage when every verify-read executes. Exactly one match, guaranteed
+    // by the microtask ordering async/await gives, not a timing-dependent flake.
+    const results = await Promise.all([
+      claimLock(storage, 'doc-1', 'alice'),
+      claimLock(storage, 'doc-1', 'bob'),
+      claimLock(storage, 'doc-1', 'carol'),
+    ])
+    expect(results.filter(Boolean)).toHaveLength(1)
   })
 
   it('release by a non-owner fails and leaves the lock held', async () => {

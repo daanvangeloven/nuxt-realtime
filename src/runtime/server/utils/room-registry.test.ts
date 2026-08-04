@@ -51,27 +51,14 @@ describe('room-registry', () => {
       expect([a, b, c].filter(r => r.firstMember)).toHaveLength(1)
     })
 
-    it('concurrent joins report firstMember exactly once on a driver with real atomic claimLock (e.g. Redis)', async () => {
-      // A minimal synchronous CAS driver, standing in for the real Lua-script atomicity
-      // reactiveRedisDriver provides, proves firstMember detection is genuinely race-free
-      // once the underlying driver can claim atomically, unlike the naive fallback above.
-      const claims = new Map<string, string>()
-      const casDriver = {
-        ...memoryDriver(),
-        claimLock: async (key: string, owner: string) => {
-          if (claims.has(key) && claims.get(key) !== owner) return false
-          claims.set(key, owner)
-          return true
-        },
-      }
-      const root = createStorage({ driver: memoryDriver() })
-      root.mount('nuxt-realtime', casDriver)
-      const scoped = prefixStorage(root, 'nuxt-realtime')
-
+    it('concurrent joins report firstMember exactly once', async () => {
+      // claimOnce's write-then-verify guarantees exactly one winner under Promise.all on any
+      // storage driver, plain memory included: see the equivalent test in lock.test.ts for why
+      // this is a guarantee of the microtask ordering, not a timing-dependent flake.
       const results = await Promise.all([
-        joinRoom(scoped, 'room-a', 'conn-1'),
-        joinRoom(scoped, 'room-a', 'conn-2'),
-        joinRoom(scoped, 'room-a', 'conn-3'),
+        joinRoom(storage, 'room-a', 'conn-1'),
+        joinRoom(storage, 'room-a', 'conn-2'),
+        joinRoom(storage, 'room-a', 'conn-3'),
       ])
       expect(results.filter(r => r.firstMember)).toHaveLength(1)
     })
@@ -108,29 +95,16 @@ describe('room-registry', () => {
       await expect(getRoomsForConnection(storage, 'conn-1')).resolves.toEqual(['room-b'])
     })
 
-    it('concurrent last-member leaves report nowEmpty exactly once on a driver with real atomic claimLock (e.g. Redis)', async () => {
-      const claims = new Map<string, string>()
-      const casDriver = {
-        ...memoryDriver(),
-        claimLock: async (key: string, owner: string) => {
-          if (claims.has(key) && claims.get(key) !== owner) return false
-          claims.set(key, owner)
-          return true
-        },
-      }
-      const root = createStorage({ driver: memoryDriver() })
-      root.mount('nuxt-realtime', casDriver)
-      const scoped = prefixStorage(root, 'nuxt-realtime')
-
+    it('concurrent last-member leaves report nowEmpty exactly once', async () => {
       await Promise.all([
-        joinRoom(scoped, 'room-a', 'conn-1'),
-        joinRoom(scoped, 'room-a', 'conn-2'),
-        joinRoom(scoped, 'room-a', 'conn-3'),
+        joinRoom(storage, 'room-a', 'conn-1'),
+        joinRoom(storage, 'room-a', 'conn-2'),
+        joinRoom(storage, 'room-a', 'conn-3'),
       ])
       const results = await Promise.all([
-        leaveRoom(scoped, 'room-a', 'conn-1'),
-        leaveRoom(scoped, 'room-a', 'conn-2'),
-        leaveRoom(scoped, 'room-a', 'conn-3'),
+        leaveRoom(storage, 'room-a', 'conn-1'),
+        leaveRoom(storage, 'room-a', 'conn-2'),
+        leaveRoom(storage, 'room-a', 'conn-3'),
       ])
       expect(results.filter(r => r.nowEmpty)).toHaveLength(1)
     })

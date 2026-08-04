@@ -6,11 +6,12 @@ import { Server } from 'socket.io'
 import { defineEventHandler, getQuery, createError } from 'h3'
 import { createRealtimeLogger } from '../utils/logger'
 import { claimLock, getLockOwner, getLockOwnerInfo, getLockRoom, getLocksOwnedBy, getRoomKeys, releaseLock, touchLease } from '../utils/lock'
+import type { PubSubDriver } from '../utils/pubsub'
 import { createConnectionRegistry } from '../utils/connection-registry'
 import { getPresenceSnapshot, getRoomsForConnection as getPresenceRoomsForConnection, joinPresence, leavePresence } from '../utils/presence'
 import { getRoomsForConnection, isRoomMember, joinRoom, leaveRoom } from '../utils/room-registry'
 import type { LockClaimPayload, LockReleasePayload, LockRoomSnapshot, PresenceJoinPayload } from '../../types'
-import { devtoolsState, createEventLog, getConnectionSummaries, getStorageSnapshot, type DevtoolsEventType, type DevtoolsIoLike } from '../utils/devtools-state'
+import { devtoolsState, createEventLog, getConnectionSummaries, getStorageSnapshot, getLockSnapshot, getPresenceOverview, getRoomMembershipSnapshot, type DevtoolsEventType, type DevtoolsIoLike } from '../utils/devtools-state'
 
 // Nitro/h3/crossws don't expose typed access to the underlying Node.js objects,
 // but Engine.IO requires them. These interfaces document the internal properties we rely on.
@@ -29,15 +30,6 @@ interface WebSocketPeer {
 interface EngineWithInternals {
   prepare: (req: IncomingMessage) => void
   onWebSocket: (req: IncomingMessage, socket: Duplex, websocket: WebSocket) => void
-}
-
-// Minimal interface for the shared pub/sub service used within this plugin.
-// The concrete implementation (RealtimePubSub) lives in drivers/redis.ts.
-interface PubSubService {
-  instanceId: string
-  publish(channel: string, data: unknown): Promise<void>
-  subscribe(channel: string, handler: (message: string) => void): () => void
-  dispose(): Promise<void>
 }
 
 const EVENT_CHANNEL = 'nuxt-realtime:events'
@@ -119,7 +111,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   // the reactive driver. The pub/sub service is shared between the storage
   // driver and the event relay so the total stays at 2 Redis connections.
   const redisOpts = (config as { nuxtRealtime?: { redis?: Record<string, unknown> } }).nuxtRealtime?.redis
-  let pubsub: PubSubService | null = null
+  let pubsub: PubSubDriver | null = null
 
   if (redisOpts) {
     const driverPath = 'nuxt-realtime/drivers/redis'
@@ -415,6 +407,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           const rooms = [`lock:${key}`]
           if (room) rooms.push(`lockroom:${room}`)
           socket.to(rooms).emit('lock:changed', { key, owner: identity, ownerInfo: ownerInfo ?? null, room })
+          record('lock:claim', socket.id, key)
         }
         if (callback) {
           callback({ success: true, owned })
@@ -442,6 +435,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           const rooms = [`lock:${key}`]
           if (room) rooms.push(`lockroom:${room}`)
           socket.to(rooms).emit('lock:changed', { key, owner: null, changed: changed ?? false, meta, room: room ?? undefined })
+          record('lock:release', socket.id, key)
         }
         if (callback) {
           callback({ success: released })
@@ -532,6 +526,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           const rooms = [`lock:${key}`]
           if (room) rooms.push(`lockroom:${room}`)
           io.to(rooms).emit('lock:changed', { key, owner: null, room: room ?? undefined })
+          record('lock:forceRelease', socket.id, key)
         }
         if (callback) callback({ success: released })
       }
@@ -557,6 +552,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         presenceRooms.add(room)
         socket.join(`presence:${room}`)
         socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: identity, info: info ?? null })
+        record('presence:join', socket.id, room)
         if (callback) callback({ success: true })
       }
       catch (error) {
@@ -577,6 +573,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         socket.leave(`presence:${room}`)
         if (existed) {
           socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: identity, info: null })
+          record('presence:leave', socket.id, room)
         }
         if (callback) callback({ success: true })
       }
@@ -615,6 +612,9 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         const allowed = await ensureRoomMembership(roomId)
+        if (allowed) {
+          record('room:join', socket.id, roomId)
+        }
         if (callback) {
           callback(allowed ? { success: true } : { success: false, error: 'Not allowed to join this room' })
         }
@@ -635,6 +635,9 @@ export default defineNitroPlugin(async (nitroApp) => {
         const { left, nowEmpty } = await leaveRoom(storage, roomId, identity)
         joinedRooms.delete(roomId)
         socket.leave(`room:${roomId}`)
+        if (left) {
+          record('room:leave', socket.id, roomId)
+        }
         if (left && nowEmpty) {
           await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
         }
@@ -848,6 +851,12 @@ export default defineNitroPlugin(async (nitroApp) => {
           return getConnectionSummaries(devtoolsState.io!)
         case 'storage':
           return getStorageSnapshot(storage, devtoolsState.io!)
+        case 'locks':
+          return getLockSnapshot(storage)
+        case 'presence':
+          return getPresenceOverview(storage, await registry.listIds())
+        case 'roomMembers':
+          return getRoomMembershipSnapshot(storage, await registry.listIds())
         case 'events':
           return devtoolsState.eventLog.list(query.sinceId ? Number(query.sinceId) : undefined)
         default:

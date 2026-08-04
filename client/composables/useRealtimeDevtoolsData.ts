@@ -1,6 +1,6 @@
 import { useDevtoolsClient } from '@nuxt/devtools-kit/iframe-client'
 import { appendEvents } from '../utils/events'
-import type { ConnectionSummary, DevtoolsEventLogEntry, RealtimeRpc, StorageSnapshotEntry } from '../types'
+import type { ConnectionSummary, DevtoolsEventLogEntry, LockSnapshotEntry, PresenceSnapshotEntry, RealtimeRpc, RoomMembershipEntry, StorageSnapshotEntry } from '../types'
 
 const RPC_NAMESPACE = 'nuxt-realtime'
 const POLL_INTERVAL_MS = 1000
@@ -10,12 +10,16 @@ export interface UseRealtimeDevtoolsDataReturn {
   connections: ComputedRef<ConnectionSummary[]>
   storage: ComputedRef<StorageSnapshotEntry[]>
   events: ComputedRef<DevtoolsEventLogEntry[]>
+  locks: ComputedRef<LockSnapshotEntry[]>
+  presence: ComputedRef<PresenceSnapshotEntry[]>
+  roomMembers: ComputedRef<RoomMembershipEntry[]>
   error: ComputedRef<string | null>
 }
 
 /**
- * Polls the DevTools RPC server for connections, storage, and the event log,
- * merging each poll into local reactive state.
+ * Polls the DevTools RPC server for connections, storage, the event log,
+ * locks, presence, and room membership, merging each poll into local
+ * reactive state.
  *
  * @returns Reactive snapshots of the last poll, plus the last poll error (if any)
  */
@@ -28,6 +32,9 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
   const connections = shallowRef<ConnectionSummary[]>([])
   const storage = shallowRef<StorageSnapshotEntry[]>([])
   const events = shallowRef<DevtoolsEventLogEntry[]>([])
+  const locks = shallowRef<LockSnapshotEntry[]>([])
+  const presence = shallowRef<PresenceSnapshotEntry[]>([])
+  const roomMembers = shallowRef<RoomMembershipEntry[]>([])
   const error = shallowRef<string | null>(null)
   let lastEventId = 0
 
@@ -36,14 +43,20 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
     if (!currentRpc) return
 
     try {
-      const [nextConnections, nextStorage, newEvents] = await Promise.all([
+      const [nextConnections, nextStorage, newEvents, nextLocks, nextPresence, nextRoomMembers] = await Promise.all([
         currentRpc.getConnections(),
         currentRpc.getStorageSnapshot(),
         currentRpc.getEventLog(lastEventId),
+        currentRpc.getLockSnapshot(),
+        currentRpc.getPresenceOverview(),
+        currentRpc.getRoomMembershipSnapshot(),
       ])
 
       connections.value = nextConnections
       storage.value = nextStorage
+      locks.value = nextLocks
+      presence.value = nextPresence
+      roomMembers.value = nextRoomMembers
 
       if (newEvents.length > 0) {
         const merged = appendEvents({ existing: events.value, incoming: newEvents, lastId: lastEventId, maxEntries: MAX_LOG_ENTRIES })
@@ -65,6 +78,9 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
     connections: computed(() => connections.value),
     storage: computed(() => storage.value),
     events: computed(() => events.value),
+    locks: computed(() => locks.value),
+    presence: computed(() => presence.value),
+    roomMembers: computed(() => roomMembers.value),
     error: computed(() => error.value),
   }
 }
