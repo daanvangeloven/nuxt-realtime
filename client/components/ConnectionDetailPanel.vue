@@ -98,5 +98,65 @@ const emit = defineEmits<{
         </span>
       </div>
     </NSectionBlock>
+
+    <NSectionBlock
+      text="Presence rooms"
+      icon="i-carbon-user-multiple"
+    >
+      <div class="flex flex-wrap gap-1">
+        <NBadge
+          v-for="room in connection.presenceRooms"
+          :key="room"
+        >
+          {{ room }}
+        </NBadge>
+        <span
+          v-if="connection.presenceRooms.length === 0"
+          class="text-xs op-40 italic"
+        >
+          none
+        </span>
+      </div>
+    </NSectionBlock>
+
+    <NSectionBlock
+      text="Lock keys"
+      icon="i-carbon-locked"
+    >
+      <div class="flex flex-wrap gap-1">
+        <NBadge
+          v-for="key in connection.lockKeys"
+          :key="key"
+        >
+          {{ key }}
+        </NBadge>
+        <span
+          v-if="connection.lockKeys.length === 0"
+          class="text-xs op-40 italic"
+        >
+          none
+        </span>
+      </div>
+    </NSectionBlock>
+
+    <NSectionBlock
+      text="Rooms"
+      icon="i-carbon-group"
+    >
+      <div class="flex flex-wrap gap-1">
+        <NBadge
+          v-for="room in connection.rooms"
+          :key="room"
+        >
+          {{ room }}
+        </NBadge>
+        <span
+          v-if="connection.rooms.length === 0"
+          class="text-xs op-40 italic"
+        >
+          none
+        </span>
+      </div>
+    </NSectionBlock>
   </div>
 </template>

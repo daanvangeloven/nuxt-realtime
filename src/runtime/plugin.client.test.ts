@@ -76,16 +76,16 @@ describe('plugin.client - auth passthrough', () => {
     return result.provide.realtimeSocket
   }
 
-  it('connects with empty auth when no hook is registered', async () => {
+  it('connects with a default connectionId when no hook is registered', async () => {
     const socket = await loadPlugin()
     await new Promise<void>(resolve => socket.on('connect', resolve))
 
-    expect(capturedAuth).toEqual({})
+    expect(capturedAuth).toEqual({ connectionId: expect.any(String) })
 
     socket.close()
   })
 
-  it('forwards auth data set by a registered nuxt-realtime:auth hook', async () => {
+  it('forwards auth data set by a registered nuxt-realtime:auth hook, alongside the default connectionId', async () => {
     hookHandlers.push((ctx) => {
       ctx.auth.token = 'test-token'
     })
@@ -93,12 +93,25 @@ describe('plugin.client - auth passthrough', () => {
     const socket = await loadPlugin()
     await new Promise<void>(resolve => socket.on('connect', resolve))
 
-    expect(capturedAuth).toEqual({ token: 'test-token' })
+    expect(capturedAuth).toEqual({ token: 'test-token', connectionId: expect.any(String) })
 
     socket.close()
   })
 
-  it('logs and still connects when the auth hook throws', async () => {
+  it('lets a registered nuxt-realtime:auth hook override the default connectionId', async () => {
+    hookHandlers.push((ctx) => {
+      ctx.auth.connectionId = 'custom-connection-id'
+    })
+
+    const socket = await loadPlugin()
+    await new Promise<void>(resolve => socket.on('connect', resolve))
+
+    expect(capturedAuth).toEqual({ connectionId: 'custom-connection-id' })
+
+    socket.close()
+  })
+
+  it('logs and still connects with a default connectionId when the auth hook throws', async () => {
     hookHandlers.push(() => {
       throw new Error('boom')
     })
@@ -106,7 +119,7 @@ describe('plugin.client - auth passthrough', () => {
     const socket = await loadPlugin()
     await new Promise<void>(resolve => socket.on('connect', resolve))
 
-    expect(capturedAuth).toEqual({})
+    expect(capturedAuth).toEqual({ connectionId: expect.any(String) })
     expect(loggerErrorSpy).toHaveBeenCalledWith('nuxt-realtime:auth hook failed:', expect.any(Error))
 
     socket.close()

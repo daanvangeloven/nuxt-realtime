@@ -2,6 +2,7 @@ import type { Driver, WatchCallback } from 'unstorage'
 import redisDriver from 'unstorage/drivers/redis'
 import { Redis, type Cluster, type ClusterNode, type ClusterOptions } from 'ioredis'
 import type { ConsolaInstance } from 'consola'
+import type { PubSubDriver } from '../runtime/server/utils/pubsub'
 
 const STORAGE_CHANNEL = 'nuxt-realtime:watch'
 
@@ -81,7 +82,7 @@ function createRedisClient(opts: ReactiveRedisDriverOptions): Redis | Cluster {
  *
  * Multiple channels and handlers are multiplexed over the same two connections.
  */
-export class RealtimePubSub {
+export class RealtimePubSub implements PubSubDriver {
   private pub: Redis | Cluster
   private sub: Redis | Cluster
   private handlers = new Map<string, Set<(message: string) => void>>()
@@ -146,7 +147,7 @@ export class RealtimePubSub {
  *
  * @example
  * ```ts
- * // nuxt.config.ts — Redis Cluster in production
+ * // nuxt.config.ts with Redis Cluster in production
  * import { reactiveRedisDriver } from 'nuxt-realtime/drivers/redis'
  *
  * export default defineNuxtConfig({

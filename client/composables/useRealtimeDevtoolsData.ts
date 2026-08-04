@@ -1,6 +1,6 @@
 import { useDevtoolsClient } from '@nuxt/devtools-kit/iframe-client'
 import { appendEvents } from '../utils/events'
-import type { ConnectionSummary, DevtoolsEventLogEntry, RealtimeRpc, StorageSnapshotEntry } from '../types'
+import type { ConnectionSummary, DevtoolsEventLogEntry, LockSnapshotEntry, PresenceSnapshotEntry, RealtimeRpc, RoomMembershipEntry, StorageSnapshotEntry } from '../types'
 
 const RPC_NAMESPACE = 'nuxt-realtime'
 const POLL_INTERVAL_MS = 1000
@@ -10,12 +10,16 @@ export interface UseRealtimeDevtoolsDataReturn {
   connections: ComputedRef<ConnectionSummary[]>
   storage: ComputedRef<StorageSnapshotEntry[]>
   events: ComputedRef<DevtoolsEventLogEntry[]>
+  locks: ComputedRef<LockSnapshotEntry[]>
+  presence: ComputedRef<PresenceSnapshotEntry[]>
+  roomMembers: ComputedRef<RoomMembershipEntry[]>
   error: ComputedRef<string | null>
 }
 
 /**
- * Polls the DevTools RPC server for connections, storage, and the event log,
- * merging each poll into local reactive state.
+ * Polls the DevTools RPC server for connections, storage, the event log,
+ * locks, presence, and room membership, merging each poll into local
+ * reactive state.
  *
  * @returns Reactive snapshots of the last poll, plus the last poll error (if any)
  */
@@ -28,6 +32,9 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
   const connections = shallowRef<ConnectionSummary[]>([])
   const storage = shallowRef<StorageSnapshotEntry[]>([])
   const events = shallowRef<DevtoolsEventLogEntry[]>([])
+  const locks = shallowRef<LockSnapshotEntry[]>([])
+  const presence = shallowRef<PresenceSnapshotEntry[]>([])
+  const roomMembers = shallowRef<RoomMembershipEntry[]>([])
   const error = shallowRef<string | null>(null)
   let lastEventId = 0
 
@@ -35,27 +42,29 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
     const currentRpc = rpc.value
     if (!currentRpc) return
 
-    try {
-      const [nextConnections, nextStorage, newEvents] = await Promise.all([
-        currentRpc.getConnections(),
-        currentRpc.getStorageSnapshot(),
-        currentRpc.getEventLog(lastEventId),
-      ])
+    const [connectionsResult, storageResult, eventsResult, locksResult, presenceResult, roomMembersResult] = await Promise.allSettled([
+      currentRpc.getConnections(),
+      currentRpc.getStorageSnapshot(),
+      currentRpc.getEventLog(lastEventId),
+      currentRpc.getLockSnapshot(),
+      currentRpc.getPresenceOverview(),
+      currentRpc.getRoomMembershipSnapshot(),
+    ])
 
-      connections.value = nextConnections
-      storage.value = nextStorage
+    if (connectionsResult.status === 'fulfilled') connections.value = connectionsResult.value
+    if (storageResult.status === 'fulfilled') storage.value = storageResult.value
+    if (locksResult.status === 'fulfilled') locks.value = locksResult.value
+    if (presenceResult.status === 'fulfilled') presence.value = presenceResult.value
+    if (roomMembersResult.status === 'fulfilled') roomMembers.value = roomMembersResult.value
 
-      if (newEvents.length > 0) {
-        const merged = appendEvents({ existing: events.value, incoming: newEvents, lastId: lastEventId, maxEntries: MAX_LOG_ENTRIES })
-        events.value = merged.events
-        lastEventId = merged.lastId
-      }
-
-      error.value = null
+    if (eventsResult.status === 'fulfilled' && eventsResult.value.length > 0) {
+      const merged = appendEvents({ existing: events.value, incoming: eventsResult.value, lastId: lastEventId, maxEntries: MAX_LOG_ENTRIES })
+      events.value = merged.events
+      lastEventId = merged.lastId
     }
-    catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-    }
+
+    const failed = [connectionsResult, storageResult, eventsResult, locksResult, presenceResult, roomMembersResult].find(r => r.status === 'rejected')
+    error.value = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : null
   }
 
   // immediateCallback: matches the original setInterval(poll, ...) + eager poll() on mount
@@ -65,6 +74,9 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
     connections: computed(() => connections.value),
     storage: computed(() => storage.value),
     events: computed(() => events.value),
+    locks: computed(() => locks.value),
+    presence: computed(() => presence.value),
+    roomMembers: computed(() => roomMembers.value),
     error: computed(() => error.value),
   }
 }

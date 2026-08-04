@@ -55,9 +55,9 @@ Real-time state synchronization for Nuxt applications. Share reactive state acro
   </script>
 
   <template>
-    <button @click="counter++">
+    <UButton @click="counter++">
       Count: {{ counter }}
-    </button>
+    </UButton>
   </template>
   ```
   :::
