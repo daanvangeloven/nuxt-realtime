@@ -1,9 +1,36 @@
 import { defineNuxtPlugin, useRuntimeConfig } from '#app'
 import { io } from 'socket.io-client'
+import { ref, type Ref } from 'vue'
 import type { RealtimeSocket } from './types'
 import { useRealtimeLogger } from './composables/useRealtimeLogger'
 
-export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>((nuxtApp) => {
+const CONNECTION_ID_STORAGE_KEY = 'nuxt-realtime:connectionId'
+
+function generateId(): string {
+  try {
+    return crypto.randomUUID() // Throws on non https connection
+  }
+  catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  }
+}
+
+// A stable id that survives reconnects
+function getOrCreateConnectionId(): string {
+  try {
+    const existing = sessionStorage.getItem(CONNECTION_ID_STORAGE_KEY)
+    if (existing) return existing
+    const generated = generateId()
+    sessionStorage.setItem(CONNECTION_ID_STORAGE_KEY, generated)
+    return generated
+  }
+  catch {
+    // fall back to an id that's stable for this page load only if sessionStorage is unavailable.
+    return generateId()
+  }
+}
+
+export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket, realtimeConnectionId: Ref<string> }>((nuxtApp) => {
   const config = useRuntimeConfig()
   const { socketUrl, socketPath, cleanup } = config.public.nuxtRealtime satisfies {
     socketUrl: string | undefined
@@ -13,6 +40,7 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>((nuxtApp) =>
   }
 
   const logger = useRealtimeLogger()
+  const connectionId = ref(getOrCreateConnectionId())
 
   // Defaults to window.location.host if no socket url is provided
   const socket: RealtimeSocket = io(socketUrl, {
@@ -22,12 +50,15 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>((nuxtApp) =>
     // registered `nuxt-realtime:auth` hook can supply a fresh/refreshed token
     // each time rather than one baked in at initial connect.
     auth: async (cb) => {
-      const ctx = { auth: {} as Record<string, unknown> }
+      const ctx = { auth: { connectionId: connectionId.value } as Record<string, unknown> }
       try {
         await nuxtApp.hooks.callHook('nuxt-realtime:auth', ctx)
       }
       catch (error) {
         logger.error('nuxt-realtime:auth hook failed:', error)
+      }
+      if (typeof ctx.auth.connectionId === 'string') {
+        connectionId.value = ctx.auth.connectionId
       }
       cb(ctx.auth)
     },
@@ -65,6 +96,7 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket }>((nuxtApp) =>
   return {
     provide: {
       realtimeSocket: socket,
+      realtimeConnectionId: connectionId,
     },
   }
 })

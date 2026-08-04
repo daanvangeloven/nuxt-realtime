@@ -2,11 +2,22 @@ import { describe, it, expect } from 'vitest'
 import {
   getConnectionSummaries,
   getStorageSnapshot,
+  getLockSnapshot,
+  getPresenceOverview,
+  getRoomMembershipSnapshot,
   createEventLog,
   safeSerialize,
   type DevtoolsIoLike,
   type DevtoolsSocketLike,
+  type DevtoolsStorageLike,
 } from './devtools-state'
+
+function fakeStorage(data: Record<string, unknown>): DevtoolsStorageLike {
+  return {
+    getKeys: async (prefix = '') => Object.keys(data).filter(key => key.startsWith(prefix)),
+    getItem: async (key: string) => data[key] ?? null,
+  }
+}
 
 function fakeSocket(overrides: Partial<DevtoolsSocketLike> & { id: string }): DevtoolsSocketLike {
   return {
@@ -31,10 +42,10 @@ describe('getConnectionSummaries', () => {
     expect(getConnectionSummaries(fakeIo([]))).toEqual([])
   })
 
-  it('splits rooms into channels and storage keys, excluding the socket\'s own id room', () => {
+  it('splits rooms into channels, storage keys, presence rooms, lock keys, and rooms, excluding the socket\'s own id room', () => {
     const socket = fakeSocket({
       id: 'socket-1',
-      rooms: ['socket-1', 'event:chat', 'event:notifications:*', 'key:counter'],
+      rooms: ['socket-1', 'event:chat', 'event:notifications:*', 'key:counter', 'presence:doc-1', 'lock:doc-1', 'room:doc-1'],
     })
 
     const [summary] = getConnectionSummaries(fakeIo([socket]))
@@ -46,6 +57,9 @@ describe('getConnectionSummaries', () => {
       connectedAt: 1000,
       channels: ['chat', 'notifications:*'],
       storageKeys: ['counter'],
+      presenceRooms: ['doc-1'],
+      lockKeys: ['doc-1'],
+      rooms: ['doc-1'],
     })
   })
 
@@ -94,6 +108,85 @@ describe('getStorageSnapshot', () => {
     const [entry] = await getStorageSnapshot(storage, fakeIo([]))
 
     expect(entry!.subscriberCount).toBe(0)
+  })
+})
+
+describe('getLockSnapshot', () => {
+  it('returns an empty list when no lock is held', async () => {
+    expect(await getLockSnapshot(fakeStorage({}))).toEqual([])
+  })
+
+  it('assembles owner, info, and room from the separate lock keys', async () => {
+    const expiresAt = Date.now() + 60_000
+    const storage = fakeStorage({
+      '_lock:doc-1': { owner: 'alice', expiresAt },
+      '_lockinfo:doc-1': { name: 'Alice' },
+      '_lockroom:doc-1': 'project-42',
+    })
+
+    expect(await getLockSnapshot(storage)).toEqual([
+      { key: 'doc-1', owner: 'alice', ownerInfo: { name: 'Alice' }, room: 'project-42', expiresAt },
+    ])
+  })
+
+  it('reports room as null and expiresAt as undefined when neither was set', async () => {
+    const storage = fakeStorage({ '_lock:doc-1': { owner: 'alice' } })
+
+    expect(await getLockSnapshot(storage)).toEqual([
+      { key: 'doc-1', owner: 'alice', ownerInfo: null, room: null, expiresAt: undefined },
+    ])
+  })
+
+  it('skips a lock whose ttl has lazily lapsed', async () => {
+    const storage = fakeStorage({ '_lock:doc-1': { owner: 'alice', expiresAt: Date.now() - 1000 } })
+
+    expect(await getLockSnapshot(storage)).toEqual([])
+  })
+})
+
+describe('getPresenceOverview', () => {
+  it('returns an empty list for a connectionId with no presence', async () => {
+    expect(await getPresenceOverview(fakeStorage({}), ['conn-1'])).toEqual([])
+  })
+
+  it('resolves room and info via the reverse index, without parsing the combined key', async () => {
+    const storage = fakeStorage({
+      '_connrooms:conn-1:document:123': true,
+      '_presence:document:123:conn-1': { name: 'Alice' },
+    })
+
+    expect(await getPresenceOverview(storage, ['conn-1'])).toEqual([
+      { room: 'document:123', connectionId: 'conn-1', info: { name: 'Alice' } },
+    ])
+  })
+
+  it('collects entries across multiple connectionIds', async () => {
+    const storage = fakeStorage({
+      '_connrooms:conn-1:room-a': true,
+      '_presence:room-a:conn-1': 'Alice',
+      '_connrooms:conn-2:room-b': true,
+      '_presence:room-b:conn-2': 'Bob',
+    })
+
+    const entries = await getPresenceOverview(storage, ['conn-1', 'conn-2'])
+    expect(entries).toEqual([
+      { room: 'room-a', connectionId: 'conn-1', info: 'Alice' },
+      { room: 'room-b', connectionId: 'conn-2', info: 'Bob' },
+    ])
+  })
+})
+
+describe('getRoomMembershipSnapshot', () => {
+  it('returns an empty list for a connectionId in no rooms', async () => {
+    expect(await getRoomMembershipSnapshot(fakeStorage({}), ['conn-1'])).toEqual([])
+  })
+
+  it('resolves roomId via the reverse index, without parsing the combined key', async () => {
+    const storage = fakeStorage({ '_memberrooms:conn-1:document:123': true })
+
+    expect(await getRoomMembershipSnapshot(storage, ['conn-1'])).toEqual([
+      { roomId: 'document:123', connectionId: 'conn-1' },
+    ])
   })
 })
 

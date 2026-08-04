@@ -1,7 +1,8 @@
 import type { Driver, WatchCallback } from 'unstorage'
 import redisDriver from 'unstorage/drivers/redis'
-import { Redis } from 'ioredis'
+import { Redis, type Cluster, type ClusterNode, type ClusterOptions } from 'ioredis'
 import type { ConsolaInstance } from 'consola'
+import type { PubSubDriver } from '../runtime/server/utils/pubsub'
 
 const STORAGE_CHANNEL = 'nuxt-realtime:watch'
 
@@ -25,6 +26,18 @@ export interface ReactiveRedisDriverOptions {
    */
   url?: string
   /**
+   * Cluster nodes. Takes priority over `url`/`host`/`port`.
+   * @example
+   * ```ts
+   * cluster: [{ host: 'redis-1', port: 6379 }, { host: 'redis-2', port: 6379 }]
+   * ```
+   */
+  cluster?: ClusterNode[]
+  /**
+   * Options passed to the ioredis cluster client (e.g. `redisOptions`, `scaleReads`).
+   */
+  clusterOptions?: ClusterOptions
+  /**
    * Redis password.
    */
   password?: string
@@ -47,7 +60,10 @@ export interface ReactiveRedisDriverOptions {
   logger?: ConsolaInstance
 }
 
-function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
+function createRedisClient(opts: ReactiveRedisDriverOptions): Redis | Cluster {
+  if (opts.cluster) {
+    return new Redis.Cluster(opts.cluster, opts.clusterOptions)
+  }
   if (opts.url) {
     return new Redis(opts.url)
   }
@@ -66,9 +82,9 @@ function createRedisClient(opts: ReactiveRedisDriverOptions): Redis {
  *
  * Multiple channels and handlers are multiplexed over the same two connections.
  */
-export class RealtimePubSub {
-  private pub: Redis
-  private sub: Redis
+export class RealtimePubSub implements PubSubDriver {
+  private pub: Redis | Cluster
+  private sub: Redis | Cluster
   private handlers = new Map<string, Set<(message: string) => void>>()
   readonly instanceId = crypto.randomUUID()
 
@@ -125,6 +141,20 @@ export class RealtimePubSub {
  * export default defineNuxtConfig({
  *   nuxtRealtime: {
  *     storage: reactiveRedisDriver({ host: 'localhost', port: 6379 }),
+ *   },
+ * })
+ * ```
+ *
+ * @example
+ * ```ts
+ * // nuxt.config.ts with Redis Cluster in production
+ * import { reactiveRedisDriver } from 'nuxt-realtime/drivers/redis'
+ *
+ * export default defineNuxtConfig({
+ *   nuxtRealtime: {
+ *     storage: reactiveRedisDriver({
+ *       cluster: [{ host: 'redis-1', port: 6379 }, { host: 'redis-2', port: 6379 }],
+ *     }),
  *   },
  * })
  * ```

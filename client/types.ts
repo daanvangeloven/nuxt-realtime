@@ -9,12 +9,34 @@ export interface ConnectionSummary {
   connectedAt: number
   channels: string[]
   storageKeys: string[]
+  presenceRooms: string[]
+  lockKeys: string[]
+  rooms: string[]
 }
 
 export interface StorageSnapshotEntry {
   key: string
   value: unknown
   subscriberCount: number
+}
+
+export interface LockSnapshotEntry {
+  key: string
+  owner: string
+  ownerInfo: unknown
+  room: string | null
+  expiresAt?: number
+}
+
+export interface PresenceSnapshotEntry {
+  room: string
+  connectionId: string
+  info: unknown
+}
+
+export interface RoomMembershipEntry {
+  roomId: string
+  connectionId: string
 }
 
 export interface DevtoolsEventLogEntry {
@@ -29,6 +51,9 @@ export interface RealtimeRpc {
   getConnections: () => Promise<ConnectionSummary[]>
   getStorageSnapshot: () => Promise<StorageSnapshotEntry[]>
   getEventLog: (sinceId?: number) => Promise<DevtoolsEventLogEntry[]>
+  getLockSnapshot: () => Promise<LockSnapshotEntry[]>
+  getPresenceOverview: () => Promise<PresenceSnapshotEntry[]>
+  getRoomMembershipSnapshot: () => Promise<RoomMembershipEntry[]>
 }
 
 export const EVENT_TYPES = [
@@ -40,6 +65,13 @@ export const EVENT_TYPES = [
   'storage:subscribe',
   'storage:unsubscribe',
   'storage:set',
+  'lock:claim',
+  'lock:release',
+  'lock:forceRelease',
+  'presence:join',
+  'presence:leave',
+  'room:join',
+  'room:leave',
 ] as const
 
 export type EventType = (typeof EVENT_TYPES)[number]

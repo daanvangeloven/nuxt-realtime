@@ -12,6 +12,13 @@ export type DevtoolsEventType
     | 'storage:subscribe'
     | 'storage:unsubscribe'
     | 'storage:set'
+    | 'lock:claim'
+    | 'lock:release'
+    | 'lock:forceRelease'
+    | 'presence:join'
+    | 'presence:leave'
+    | 'room:join'
+    | 'room:leave'
 
 export interface DevtoolsEventLogEntry {
   id: number
@@ -28,12 +35,34 @@ export interface ConnectionSummary {
   connectedAt: number
   channels: string[]
   storageKeys: string[]
+  presenceRooms: string[]
+  lockKeys: string[]
+  rooms: string[]
 }
 
 export interface StorageSnapshotEntry {
   key: string
   value: unknown
   subscriberCount: number
+}
+
+export interface LockSnapshotEntry {
+  key: string
+  owner: string
+  ownerInfo: unknown
+  room: string | null
+  expiresAt?: number
+}
+
+export interface PresenceSnapshotEntry {
+  room: string
+  connectionId: string
+  info: unknown
+}
+
+export interface RoomMembershipEntry {
+  roomId: string
+  connectionId: string
 }
 
 // Minimal structural shapes for the bits of socket.io's `io` object this
@@ -54,7 +83,7 @@ export interface DevtoolsIoLike {
 }
 
 export interface DevtoolsStorageLike {
-  getKeys: () => Promise<string[]>
+  getKeys: (prefix?: string) => Promise<string[]>
   getItem: (key: string) => Promise<unknown>
 }
 
@@ -80,9 +109,10 @@ export function safeSerialize(value: unknown, maxLen = DEFAULT_MAX_VALUE_LEN): u
 }
 
 /**
- * Summarizes every currently connected socket: which event channels and
- * storage keys it's subscribed to (derived from its room memberships), split
- * on the `event:`/`key:` room-name prefixes used elsewhere in the plugin.
+ * Summarizes every currently connected socket: which event channels, storage
+ * keys, presence rooms, lock keys, and rooms it's subscribed to (derived from
+ * its room memberships), split on the respective room-name prefixes used
+ * elsewhere in the plugin.
  */
 export function getConnectionSummaries(io: DevtoolsIoLike): ConnectionSummary[] {
   const summaries: ConnectionSummary[] = []
@@ -95,6 +125,15 @@ export function getConnectionSummaries(io: DevtoolsIoLike): ConnectionSummary[] 
     const storageKeys = rooms
       .filter(room => room.startsWith('key:'))
       .map(room => room.slice('key:'.length))
+    const presenceRooms = rooms
+      .filter(room => room.startsWith('presence:'))
+      .map(room => room.slice('presence:'.length))
+    const lockKeys = rooms
+      .filter(room => room.startsWith('lock:'))
+      .map(room => room.slice('lock:'.length))
+    const memberRooms = rooms
+      .filter(room => room.startsWith('room:'))
+      .map(room => room.slice('room:'.length))
 
     summaries.push({
       id,
@@ -103,6 +142,9 @@ export function getConnectionSummaries(io: DevtoolsIoLike): ConnectionSummary[] 
       connectedAt: socket.handshake.issued,
       channels,
       storageKeys,
+      presenceRooms,
+      lockKeys,
+      rooms: memberRooms,
     })
   }
 
@@ -126,6 +168,86 @@ export async function getStorageSnapshot(storage: DevtoolsStorageLike, io: Devto
       subscriberCount,
     }
   }))
+}
+
+/**
+ * Snapshots every currently-held lock (owner, opaque owner info, room tag if
+ * any, expiry). Reads `_lock:`/`_lockinfo:`/`_lockroom:` keys directly rather
+ * than importing from `lock.ts`, matching this file's existing no-sibling-
+ * import convention (see `_lease:` handling in `getStorageSnapshot` above).
+ * Skips a key whose TTL has lazily lapsed, mirroring `lock.ts`'s own
+ * `isExpired` check, so an expired-but-not-yet-cleaned-up lock doesn't show
+ * as still held.
+ */
+export async function getLockSnapshot(storage: DevtoolsStorageLike): Promise<LockSnapshotEntry[]> {
+  const prefix = '_lock:'
+  const keys = await storage.getKeys(prefix)
+
+  const entries = await Promise.all(keys.map(async (fullKey): Promise<LockSnapshotEntry | null> => {
+    const key = fullKey.slice(prefix.length)
+    const record = await storage.getItem(fullKey) as { owner: string, expiresAt?: number } | null
+    if (!record || (record.expiresAt !== undefined && Date.now() > record.expiresAt)) {
+      return null
+    }
+    const [ownerInfo, room] = await Promise.all([
+      storage.getItem(`_lockinfo:${key}`),
+      storage.getItem(`_lockroom:${key}`) as Promise<string | null>,
+    ])
+
+    return {
+      key,
+      owner: record.owner,
+      ownerInfo: safeSerialize(ownerInfo),
+      room: room ?? null,
+      expiresAt: record.expiresAt,
+    }
+  }))
+
+  return entries.filter((entry): entry is LockSnapshotEntry => entry !== null)
+}
+
+/**
+ * Snapshots presence membership for every given `connectionId` (typically
+ * every id `ConnectionRegistry.listIds()` returns). Presence keys are
+ * `_presence:<room>:<connectionId>`, and room names may themselves contain
+ * colons, so splitting a scanned key apart to recover room/connectionId is
+ * ambiguous. Scanning the other direction avoids that entirely: each
+ * connectionId's own reverse-index prefix (`_connrooms:<connectionId>:`)
+ * leaves only the room unknown.
+ */
+export async function getPresenceOverview(storage: DevtoolsStorageLike, connectionIds: string[]): Promise<PresenceSnapshotEntry[]> {
+  const entries: PresenceSnapshotEntry[] = []
+
+  for (const connectionId of connectionIds) {
+    const prefix = `_connrooms:${connectionId}:`
+    const roomKeys = await storage.getKeys(prefix)
+    for (const roomKey of roomKeys) {
+      const room = roomKey.slice(prefix.length)
+      const info = await storage.getItem(`_presence:${room}:${connectionId}`)
+      entries.push({ room, connectionId, info: safeSerialize(info) })
+    }
+  }
+
+  return entries
+}
+
+/**
+ * Snapshots `useRealtimeRoom` membership for every given `connectionId`.
+ * Same reverse-index approach as `getPresenceOverview` and for the same
+ * reason: `_memberrooms:<connectionId>:` leaves only the roomId unknown.
+ */
+export async function getRoomMembershipSnapshot(storage: DevtoolsStorageLike, connectionIds: string[]): Promise<RoomMembershipEntry[]> {
+  const entries: RoomMembershipEntry[] = []
+
+  for (const connectionId of connectionIds) {
+    const prefix = `_memberrooms:${connectionId}:`
+    const roomKeys = await storage.getKeys(prefix)
+    for (const roomKey of roomKeys) {
+      entries.push({ roomId: roomKey.slice(prefix.length), connectionId })
+    }
+  }
+
+  return entries
 }
 
 /**

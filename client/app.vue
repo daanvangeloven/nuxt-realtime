@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const search = ref('')
-const { connections, storage, events, error } = useRealtimeDevtoolsData()
+const { connections, storage, events, locks, presence, roomMembers, error } = useRealtimeDevtoolsData()
 const { selectedConnectionId, selectedConnection, select, clear } = useConnectionSelection(connections)
 </script>
 
@@ -34,6 +34,12 @@ const { selectedConnectionId, selectedConnection, select, clear } = useConnectio
       />
 
       <StoragePanel :entries="storage" />
+
+      <LocksPanel :entries="locks" />
+
+      <PresencePanel :entries="presence" />
+
+      <RoomsPanel :entries="roomMembers" />
 
       <EventLogPanel :events="events" />
     </template>
