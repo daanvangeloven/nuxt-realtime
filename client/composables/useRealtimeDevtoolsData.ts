@@ -42,33 +42,29 @@ export function useRealtimeDevtoolsData(): UseRealtimeDevtoolsDataReturn {
     const currentRpc = rpc.value
     if (!currentRpc) return
 
-    try {
-      const [nextConnections, nextStorage, newEvents, nextLocks, nextPresence, nextRoomMembers] = await Promise.all([
-        currentRpc.getConnections(),
-        currentRpc.getStorageSnapshot(),
-        currentRpc.getEventLog(lastEventId),
-        currentRpc.getLockSnapshot(),
-        currentRpc.getPresenceOverview(),
-        currentRpc.getRoomMembershipSnapshot(),
-      ])
+    const [connectionsResult, storageResult, eventsResult, locksResult, presenceResult, roomMembersResult] = await Promise.allSettled([
+      currentRpc.getConnections(),
+      currentRpc.getStorageSnapshot(),
+      currentRpc.getEventLog(lastEventId),
+      currentRpc.getLockSnapshot(),
+      currentRpc.getPresenceOverview(),
+      currentRpc.getRoomMembershipSnapshot(),
+    ])
 
-      connections.value = nextConnections
-      storage.value = nextStorage
-      locks.value = nextLocks
-      presence.value = nextPresence
-      roomMembers.value = nextRoomMembers
+    if (connectionsResult.status === 'fulfilled') connections.value = connectionsResult.value
+    if (storageResult.status === 'fulfilled') storage.value = storageResult.value
+    if (locksResult.status === 'fulfilled') locks.value = locksResult.value
+    if (presenceResult.status === 'fulfilled') presence.value = presenceResult.value
+    if (roomMembersResult.status === 'fulfilled') roomMembers.value = roomMembersResult.value
 
-      if (newEvents.length > 0) {
-        const merged = appendEvents({ existing: events.value, incoming: newEvents, lastId: lastEventId, maxEntries: MAX_LOG_ENTRIES })
-        events.value = merged.events
-        lastEventId = merged.lastId
-      }
-
-      error.value = null
+    if (eventsResult.status === 'fulfilled' && eventsResult.value.length > 0) {
+      const merged = appendEvents({ existing: events.value, incoming: eventsResult.value, lastId: lastEventId, maxEntries: MAX_LOG_ENTRIES })
+      events.value = merged.events
+      lastEventId = merged.lastId
     }
-    catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-    }
+
+    const failed = [connectionsResult, storageResult, eventsResult, locksResult, presenceResult, roomMembersResult].find(r => r.status === 'rejected')
+    error.value = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : null
   }
 
   // immediateCallback: matches the original setInterval(poll, ...) + eager poll() on mount
