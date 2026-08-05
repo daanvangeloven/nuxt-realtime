@@ -51,6 +51,13 @@ export default defineNuxtConfig({
     },
   },
 
+  fonts: {
+    families: [
+      { name: 'Public Sans', weights: [400, 500, 600, 700] },
+      { name: 'Inter', weights: [400, 500, 600, 700] },
+    ],
+  },
+
   icon: {
     provider: 'iconify',
   },

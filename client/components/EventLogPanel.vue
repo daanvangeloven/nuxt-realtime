@@ -20,7 +20,10 @@ const { activeTypes, filteredEvents, isAllActive, setAll, toggle } = useEventTyp
     <div class="flex justify-end mb-2">
       <NDropdown direction="end">
         <template #trigger="{ click }">
-          <NButton n="xs" @click="click">
+          <NButton
+            n="xs"
+            @click="click"
+          >
             Filter events ({{ activeTypes.length }}/{{ EVENT_TYPES.length }})
           </NButton>
         </template>
