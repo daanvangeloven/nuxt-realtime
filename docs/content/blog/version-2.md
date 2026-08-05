@@ -41,6 +41,8 @@ const { claim, release, ownedByMe, locked } = useRealtimeLock('document:123')
 
 [`useRealtimeLockRoom`](/composables/userealtimelockroom) pairs with it for a bulk, read-only view of every lock tagged with a room, without subscribing to each key individually.
 
+<video src="/lock-demo.mp4" autoplay loop muted playsinline></video>
+
 See the [locking docs](/composables/userealtimelock) for details.
 
 ## Presence
@@ -54,6 +56,8 @@ const { members, join, leave } = useRealtimePresence('document:123', {
 })
 </script>
 ```
+
+<video src="/presence-demo.mp4" autoplay loop muted playsinline></video>
 
 See the [presence docs](/composables/userealtimepresence) for details.
 
@@ -96,9 +100,3 @@ See the [configuration docs](/getting-started/configuration) for details.
 ## Fixes
 
 - Client-supplied storage keys can no longer read or write the internal `_lease:` namespace used for storage expiry.
-
-## In progress
-
-Next up: splitting the realtime server into a standalone deployable process, so it can run on a long-lived host like Railway while the Nuxt frontend stays on serverless/edge platforms like Vercel or Netlify.
-
-

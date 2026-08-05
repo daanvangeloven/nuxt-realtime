@@ -26,6 +26,12 @@ useSeoMeta({
   ogDescription: page.value.description,
 })
 
+defineOgImage('DocsSatori', {
+  headline: page.value.category,
+  title: page.value.title || '',
+  description: page.value.description || '',
+})
+
 const links = computed(() => {
   const links = []
   if (toc?.bottom?.edit) {
