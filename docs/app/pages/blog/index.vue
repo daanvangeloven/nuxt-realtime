@@ -58,7 +58,7 @@ useSeoMeta({
           :title="post.title"
           :description="post.description"
           :image="post.image ? { src: resolveBlogImage(post.image), alt: post.title } : undefined"
-          :date="new Date(post.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })"
+          :date="new Date(post.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })"
           :authors="post.authors?.map(author => ({ ...author, avatar: author.avatar ? { ...author.avatar, alt: `${author.name} avatar` } : undefined }))"
           :badge="{ label: post.category, color: 'primary', variant: 'subtle' }"
           :variant="index === 0 ? 'outline' : 'subtle'"

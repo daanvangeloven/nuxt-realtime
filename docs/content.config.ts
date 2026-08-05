@@ -25,7 +25,7 @@ export default defineContentConfig({
       type: 'page',
       source: 'blog/**',
       schema: z.object({
-        date: z.string(),
+        date: z.date(),
         image: z.string().optional(),
         category: z.enum(['Release', 'Tutorial', 'Announcement', 'Article']),
         tags: z.array(z.string()).optional(),

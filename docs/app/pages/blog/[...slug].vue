@@ -65,7 +65,7 @@ const links = computed(() => {
               variant="subtle"
             />
             <span class="text-muted">
-              <time>{{ new Date(page.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) }}</time>
+              <time>{{ new Date(page.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) }}</time>
             </span>
           </div>
         </template>
