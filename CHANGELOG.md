@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.2.0
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.2...v0.2.0)
+
+Read more about this release: [nuxtrealtime.com/blog/nuxt-realtime-0-2](https://nuxtrealtime.com/blog/nuxt-realtime-0-2)
+
+### 🚀 Enhancements
+
+- Added devtools ([1473b94](https://github.com/daanvangeloven/nuxt-realtime/commit/1473b94))
+- Redis cluster support ([9d52ce0](https://github.com/daanvangeloven/nuxt-realtime/commit/9d52ce0))
+- Added room, presence and locking composables ([a148e89](https://github.com/daanvangeloven/nuxt-realtime/commit/a148e89))
+
+### 🩹 Fixes
+
+- Derive socket.io server route path from configured socketio.path ([8ebe07e](https://github.com/daanvangeloven/nuxt-realtime/commit/8ebe07e))
+- Added check for reserved _lease keys ([2923707](https://github.com/daanvangeloven/nuxt-realtime/commit/2923707))
+
+### 📖 Documentation
+
+- **core:** Added redis cluster config to docs ([b95fb42](https://github.com/daanvangeloven/nuxt-realtime/commit/b95fb42))
+- Added blog and documentation pages for the new room, presence and locking composables ([0de9e99](https://github.com/daanvangeloven/nuxt-realtime/commit/0de9e99))
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.1.2
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.2...v0.1.2)
