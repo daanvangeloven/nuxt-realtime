@@ -3,6 +3,7 @@ title: Nuxt Realtime 0.2
 description: DevTools, connection auth, and presence/locking/rooms land in Nuxt Realtime 0.2.
 date: 2026-07-31
 category: Release
+highlighted: true
 tags: [release]
 authors:
   - name: Daan van Geloven

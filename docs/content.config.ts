@@ -27,6 +27,7 @@ export default defineContentConfig({
       schema: z.object({
         date: z.date(),
         image: z.string().optional(),
+        highlighted: z.boolean().optional(),
         category: z.enum(['Release', 'Tutorial', 'Announcement', 'Article']),
         tags: z.array(z.string()).optional(),
         authors: z.array(z.object({
