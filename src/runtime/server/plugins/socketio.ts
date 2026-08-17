@@ -36,10 +36,19 @@ const EVENT_CHANNEL = 'nuxt-realtime:events'
 const LEASE_PREFIX = '_lease:'
 
 /**
- * Client-supplied storage keys must not reach into the internal `_lease:` namespace
+ * Client-supplied storage keys must not reach into any internal namespace.
+ *
+ * Module state (`_lock:`, `_lockinfo:`, `_lockowner:`, `_ownerlocks:`, `_lockroom:`,
+ * `_roomkeys:`, `_presence:`, `_connrooms:`, `_roommember:`, `_memberrooms:`,
+ * `_roomcreated:`, `_roomclosing:`, `_conn:`, `_reclaiming:`, `_lease:`) shares the
+ * `nuxt-realtime` mount with client-supplied keys, so the entire `_` prefix is reserved.
+ *
+ * Non-string keys are rejected here too: `storage:get` and `storage:set` run this check
+ * outside their try/catch, so `key.startsWith` on a non-string would throw out of the
+ * listener rather than returning an error to the caller.
  */
-function isReservedKey(key: string): boolean {
-  return key.startsWith(LEASE_PREFIX)
+function isReservedKey(key: unknown): boolean {
+  return typeof key !== 'string' || key.length === 0 || key.startsWith('_')
 }
 
 // Lock/presence/room keys are interpolated straight into storage keys (e.g. `_lock:${key}`),
@@ -77,6 +86,15 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
+
+  // Rejecting a key is otherwise silent for subscribe (no ack) and indistinguishable from
+  // "no value yet" for get, which makes a reserved key look like a sync bug. Warn in dev so
+  // the cause is obvious at the call site. Dev-only on purpose: a client controls this string,
+  // so warning in production would hand it a log-flooding primitive.
+  const warnReservedKey = (op: string, key: unknown) => {
+    if (!import.meta.dev) return
+    logger.warn(`${op} rejected for reserved key ${JSON.stringify(key)}: keys starting with "_" are reserved for internal module state`)
+  }
 
   const lockConfig = (config as { nuxtRealtime?: { lock?: { defaultTtl?: number, staleGraceMs?: number } } }).nuxtRealtime?.lock
   const staleGraceMs = lockConfig?.staleGraceMs ?? 10_000
@@ -118,12 +136,21 @@ export default defineNitroPlugin(async (nitroApp) => {
     const { reactiveRedisDriver, RealtimePubSub } = await import(driverPath)
     pubsub = new RealtimePubSub(redisOpts)
     const rootStorage = useStorage() as unknown as { mount: (base: string, driver: unknown) => void, unmount: (base: string) => Promise<void> }
+    const redisBase = (redisOpts as { base?: string }).base ?? ''
     await rootStorage.unmount('nuxt-realtime')
+    await rootStorage.unmount('_nuxt-realtime')
     rootStorage.mount('nuxt-realtime', reactiveRedisDriver({ ...redisOpts, pubsub, logger }))
+    // Distinct Redis key prefix so module state and client keys cannot collide there either.
+    // The pub/sub service is still shared, so the connection count stays at 2.
+    rootStorage.mount('_nuxt-realtime', reactiveRedisDriver({ ...redisOpts, base: `${redisBase}_internal:`, pubsub, logger }))
   }
 
+  // Client-facing: every key here is reachable via storage:get/storage:set by design.
   const storage = useStorage('nuxt-realtime')
-  const registry = createConnectionRegistry(storage, { staleGraceMs })
+  // Module state: locks, presence, room membership, connection records, leases.
+  // Never addressable from a socket event.
+  const internal = useStorage('_nuxt-realtime')
+  const registry = createConnectionRegistry(internal, { staleGraceMs })
 
   // Cross-server sync: watch for writes from other server instances and broadcast
   // to locally subscribed Socket.IO clients. Drivers that don't support native
@@ -139,7 +166,6 @@ export default defineNitroPlugin(async (nitroApp) => {
       if (!key.startsWith(STORAGE_PREFIX)) return
 
       const relKey = key.slice(STORAGE_PREFIX.length)
-      if (relKey.startsWith('_lease:')) return
 
       const value = await storage.getItem(relKey)
       const room = `key:${relKey}`
@@ -280,7 +306,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // caller is (or already was) a member.
     async function ensureRoomMembership(roomId: string): Promise<boolean> {
       await identityReady
-      const alreadyMember = await isRoomMember(storage, roomId, identity)
+      const alreadyMember = await isRoomMember(internal, roomId, identity)
       if (!alreadyMember) {
         const ctx = { roomId, connectionId: identity, socket, allow: true }
         try {
@@ -294,7 +320,7 @@ export default defineNitroPlugin(async (nitroApp) => {
         }
         if (!ctx.allow) return false
 
-        const { firstMember } = await joinRoom(storage, roomId, identity)
+        const { firstMember } = await joinRoom(internal, roomId, identity)
         if (firstMember) {
           await nitroApp.hooks.callHook('nuxt-realtime:roomCreated', { roomId })
         }
@@ -311,6 +337,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Storage operations
     socket.on('storage:get', async (key: string, callback) => {
       if (isReservedKey(key)) {
+        warnReservedKey('storage:get', key)
         callback(null)
         return
       }
@@ -326,6 +353,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     socket.on('storage:set', async ({ key, value }, callback) => {
       if (isReservedKey(key)) {
+        warnReservedKey('storage:set', key)
         if (callback) {
           callback({ success: false, error: 'Key is reserved for internal use' })
         }
@@ -333,7 +361,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         await storage.setItem(key, value)
-        await touchLease(storage, key)
+        await touchLease(internal, key)
         socket.to(`key:${key}`).emit('storage:updated', { key, value })
         record('storage:set', socket.id, key)
 
@@ -356,11 +384,14 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     socket.on('storage:subscribe', async (key: string) => {
-      if (isReservedKey(key)) return
+      if (isReservedKey(key)) {
+        warnReservedKey('storage:subscribe', key)
+        return
+      }
       socket.join(`key:${key}`)
       record('storage:subscribe', socket.id, key)
       try {
-        await touchLease(storage, key)
+        await touchLease(internal, key)
       }
       catch (error) {
         logger.error('Lease touch error on subscribe:', error)
@@ -378,8 +409,8 @@ export default defineNitroPlugin(async (nitroApp) => {
         // Touch leases for all keys this socket is subscribed to, plus any locks it holds
         const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
         await Promise.all([
-          ...storageRooms.map(room => touchLease(storage, room.slice('key:'.length))),
-          ...[...ownedLocks].map(key => touchLease(storage, `_lock:${key}`)),
+          ...storageRooms.map(room => touchLease(internal, room.slice('key:'.length))),
+          ...[...ownedLocks].map(key => touchLease(internal, `_lock:${key}`)),
         ])
       }
       catch (error) {
@@ -401,7 +432,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           return
         }
         await identityReady
-        const owned = await claimLock(storage, key, identity, ownerInfo, { room, ttl: ttl ?? defaultTtl })
+        const owned = await claimLock(internal, key, identity, ownerInfo, { room, ttl: ttl ?? defaultTtl })
         if (owned) {
           ownedLocks.add(key)
           const rooms = [`lock:${key}`]
@@ -428,8 +459,8 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         await identityReady
-        const room = await getLockRoom(storage, key)
-        const released = await releaseLock(storage, key, identity)
+        const room = await getLockRoom(internal, key)
+        const released = await releaseLock(internal, key, identity)
         if (released) {
           ownedLocks.delete(key)
           const rooms = [`lock:${key}`]
@@ -452,8 +483,8 @@ export default defineNitroPlugin(async (nitroApp) => {
     socket.on('lock:subscribe', async (key: string, callback) => {
       socket.join(`lock:${key}`)
       try {
-        const owner = await getLockOwner(storage, key)
-        const ownerInfo = owner ? await getLockOwnerInfo(storage, key) : null
+        const owner = await getLockOwner(internal, key)
+        const ownerInfo = owner ? await getLockOwnerInfo(internal, key) : null
         if (callback) {
           callback({ key, owner, ownerInfo })
         }
@@ -480,12 +511,12 @@ export default defineNitroPlugin(async (nitroApp) => {
           return
         }
         socket.join(`lockroom:${room}`)
-        const keys = await getRoomKeys(storage, room)
+        const keys = await getRoomKeys(internal, room)
         const snapshot: LockRoomSnapshot = {}
         for (const key of keys) {
-          const owner = await getLockOwner(storage, key)
+          const owner = await getLockOwner(internal, key)
           if (owner) {
-            snapshot[key] = { owner, ownerInfo: await getLockOwnerInfo(storage, key) }
+            snapshot[key] = { owner, ownerInfo: await getLockOwnerInfo(internal, key) }
           }
         }
         if (callback) callback(snapshot)
@@ -507,7 +538,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         await identityReady
-        const currentOwner = await getLockOwner(storage, key)
+        const currentOwner = await getLockOwner(internal, key)
         const ctx = { key, connectionId: identity, currentOwner, allow: false }
         await nitroApp.hooks.callHook('nuxt-realtime:canForceRelease', ctx)
 
@@ -520,8 +551,8 @@ export default defineNitroPlugin(async (nitroApp) => {
           return
         }
 
-        const room = await getLockRoom(storage, key)
-        const released = await releaseLock(storage, key, currentOwner)
+        const room = await getLockRoom(internal, key)
+        const released = await releaseLock(internal, key, currentOwner)
         if (released) {
           const rooms = [`lock:${key}`]
           if (room) rooms.push(`lockroom:${room}`)
@@ -548,7 +579,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           if (callback) callback({ success: false, error: 'Not allowed to join this room' })
           return
         }
-        await joinPresence(storage, room, identity, info ?? null)
+        await joinPresence(internal, room, identity, info ?? null)
         presenceRooms.add(room)
         socket.join(`presence:${room}`)
         socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: identity, info: info ?? null })
@@ -568,7 +599,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         await identityReady
-        const existed = await leavePresence(storage, room, identity)
+        const existed = await leavePresence(internal, room, identity)
         presenceRooms.delete(room)
         socket.leave(`presence:${room}`)
         if (existed) {
@@ -593,7 +624,7 @@ export default defineNitroPlugin(async (nitroApp) => {
           return
         }
         socket.join(`presence:${room}`)
-        const snapshot = await getPresenceSnapshot(storage, room)
+        const snapshot = await getPresenceSnapshot(internal, room)
         if (callback) callback(snapshot)
       }
       catch (error) {
@@ -632,7 +663,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
       try {
         await identityReady
-        const { left, nowEmpty } = await leaveRoom(storage, roomId, identity)
+        const { left, nowEmpty } = await leaveRoom(internal, roomId, identity)
         joinedRooms.delete(roomId)
         socket.leave(`room:${roomId}`)
         if (left) {
@@ -663,8 +694,8 @@ export default defineNitroPlugin(async (nitroApp) => {
           return
         }
         await Promise.all([...ownedLocks].map(async (key) => {
-          const room = await getLockRoom(storage, key)
-          const released = await releaseLock(storage, key, socket.id)
+          const room = await getLockRoom(internal, key)
+          const released = await releaseLock(internal, key, socket.id)
           if (released) {
             const rooms = [`lock:${key}`]
             if (room) rooms.push(`lockroom:${room}`)
@@ -672,13 +703,13 @@ export default defineNitroPlugin(async (nitroApp) => {
           }
         }))
         await Promise.all([...presenceRooms].map(async (room) => {
-          const existed = await leavePresence(storage, room, socket.id)
+          const existed = await leavePresence(internal, room, socket.id)
           if (existed) {
             socket.to(`presence:${room}`).emit('presence:changed', { room, connectionId: socket.id, info: null })
           }
         }))
         await Promise.all([...joinedRooms].map(async (roomId) => {
-          const { left, nowEmpty } = await leaveRoom(storage, roomId, socket.id)
+          const { left, nowEmpty } = await leaveRoom(internal, roomId, socket.id)
           if (left && nowEmpty) {
             await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
           }
@@ -733,6 +764,21 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
   })
 
+  // One-time migration. Up to 0.2.x module state lived in the client-facing mount, so an
+  // upgraded deployment can still have `_lock:`/`_conn:`/`_roommember:` keys sitting in
+  // `nuxt-realtime` where clients can read them and the devtools storage panel lists them.
+  // All of it is ephemeral session state, so dropping it is safe; client keys are untouched.
+  try {
+    const staleInternalKeys = (await storage.getKeys()).filter(k => k.startsWith('_'))
+    if (staleInternalKeys.length > 0) {
+      await Promise.all(staleInternalKeys.map(k => storage.removeItem(k)))
+      logger.info(`Removed ${staleInternalKeys.length} pre-0.3 internal key(s) from the client storage mount`)
+    }
+  }
+  catch (error) {
+    logger.error('Internal key migration sweep failed:', error)
+  }
+
   // Cleanup job
   if (cleanupConfig) {
     const { cleanupInterval, idleThreshold } = cleanupConfig
@@ -743,17 +789,37 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     cleanupIntervalId = setInterval(async () => {
       try {
-        const allKeys = await storage.getKeys()
-        const leaseKeys = allKeys.filter(k => k.startsWith('_lease:'))
+        const leaseKeys = (await internal.getKeys()).filter(k => k.startsWith(LEASE_PREFIX))
 
         for (const leaseKey of leaseKeys) {
-          const lease = await storage.getItem<{ lastSeen: number }>(leaseKey)
-          if (lease && Date.now() - lease.lastSeen > idleThreshold) {
-            const dataKey = leaseKey.slice('_lease:'.length)
-            await storage.removeItem(leaseKey)
-            await storage.removeItem(dataKey)
-            logger.debug(`Cleaned up idle key: ${dataKey}`)
+          const lease = await internal.getItem<{ lastSeen: number }>(leaseKey)
+          if (!lease || Date.now() - lease.lastSeen <= idleThreshold) continue
+
+          const dataKey = leaseKey.slice(LEASE_PREFIX.length)
+          await internal.removeItem(leaseKey)
+
+          // A `_lock:` lease guards module state, not a client key. Removing the raw key left
+          // _lockinfo:/_lockowner:/_ownerlocks:/_lockroom:/_roomkeys: orphaned forever and told
+          // nobody, so the holder kept reporting ownedByMe while another client could claim the
+          // same lock. Go through releaseLock and broadcast, exactly like the grace sweep.
+          if (dataKey.startsWith('_lock:')) {
+            const key = dataKey.slice('_lock:'.length)
+            const owner = await getLockOwner(internal, key)
+            if (owner) {
+              const room = await getLockRoom(internal, key)
+              const released = await releaseLock(internal, key, owner)
+              if (released) {
+                const rooms = [`lock:${key}`]
+                if (room) rooms.push(`lockroom:${room}`)
+                io.to(rooms).emit('lock:changed', { key, owner: null, room: room ?? undefined })
+              }
+            }
+            logger.debug(`Cleaned up idle lock: ${key}`)
+            continue
           }
+
+          await storage.removeItem(dataKey)
+          logger.debug(`Cleaned up idle key: ${dataKey}`)
         }
       }
       catch (error) {
@@ -779,10 +845,10 @@ export default defineNitroPlugin(async (nitroApp) => {
           const record = await registry.lookup(connectionId)
           if (!record || !registry.isGraceExpired(record)) continue
 
-          const keys = await getLocksOwnedBy(storage, connectionId)
+          const keys = await getLocksOwnedBy(internal, connectionId)
           await Promise.all(keys.map(async (key) => {
-            const room = await getLockRoom(storage, key)
-            const released = await releaseLock(storage, key, connectionId)
+            const room = await getLockRoom(internal, key)
+            const released = await releaseLock(internal, key, connectionId)
             if (released) {
               const rooms = [`lock:${key}`]
               if (room) rooms.push(`lockroom:${room}`)
@@ -790,17 +856,17 @@ export default defineNitroPlugin(async (nitroApp) => {
             }
           }))
 
-          const presenceRoomsHeld = await getPresenceRoomsForConnection(storage, connectionId)
+          const presenceRoomsHeld = await getPresenceRoomsForConnection(internal, connectionId)
           await Promise.all(presenceRoomsHeld.map(async (room) => {
-            const existed = await leavePresence(storage, room, connectionId)
+            const existed = await leavePresence(internal, room, connectionId)
             if (existed) {
               io.to(`presence:${room}`).emit('presence:changed', { room, connectionId, info: null })
             }
           }))
 
-          const memberOfRooms = await getRoomsForConnection(storage, connectionId)
+          const memberOfRooms = await getRoomsForConnection(internal, connectionId)
           await Promise.all(memberOfRooms.map(async (roomId) => {
-            const { left, nowEmpty } = await leaveRoom(storage, roomId, connectionId)
+            const { left, nowEmpty } = await leaveRoom(internal, roomId, connectionId)
             if (left && nowEmpty) {
               await nitroApp.hooks.callHook('nuxt-realtime:roomEmpty', { roomId })
             }
@@ -843,7 +909,11 @@ export default defineNitroPlugin(async (nitroApp) => {
   }))
 
   // Dev-only introspection endpoint backing the Nuxt DevTools "Realtime" tab.
-  if (devtoolsEnabled) {
+  // `devtoolsEnabled` comes from *public* runtime config, so it is overridable at runtime
+  // (NUXT_PUBLIC_NUXT_REALTIME_DEVTOOLS_ENABLED=true). This endpoint dumps every storage key
+  // and value, all connections, and all lock owner info, so gate it on the build-time dev
+  // flag as well and let the config option only ever turn it off.
+  if (devtoolsEnabled && import.meta.dev) {
     nitroApp.router.use('/__nuxt-realtime__/devtools', defineEventHandler(async (event) => {
       const query = getQuery(event)
       switch (query.type) {
@@ -852,11 +922,11 @@ export default defineNitroPlugin(async (nitroApp) => {
         case 'storage':
           return getStorageSnapshot(storage, devtoolsState.io!)
         case 'locks':
-          return getLockSnapshot(storage)
+          return getLockSnapshot(internal)
         case 'presence':
-          return getPresenceOverview(storage, await registry.listIds())
+          return getPresenceOverview(internal, await registry.listIds())
         case 'roomMembers':
-          return getRoomMembershipSnapshot(storage, await registry.listIds())
+          return getRoomMembershipSnapshot(internal, await registry.listIds())
         case 'events':
           return devtoolsState.eventLog.list(query.sinceId ? Number(query.sinceId) : undefined)
         default:

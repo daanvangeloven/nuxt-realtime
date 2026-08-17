@@ -169,7 +169,14 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
   const { instanceId } = pubsub
   const listeners = new Set<WatchCallback>()
 
-  const unsubscribe = pubsub.subscribe(STORAGE_CHANNEL, (message) => {
+  // Scope the watch channel to this driver's key prefix. Keys published here are relative to
+  // `base`, so two drivers sharing one channel would hand each other's keys to their own watch
+  // callbacks: the mount would then resolve a foreign relative key against its own prefix.
+  // That matters for the internal/client mount split, and it already affected two apps sharing
+  // one Redis instance with different `base` values.
+  const channel = `${STORAGE_CHANNEL}:${baseOpts.base ?? ''}`
+
+  const unsubscribe = pubsub.subscribe(channel, (message) => {
     try {
       const { event, key, origin } = JSON.parse(message) as { event: string, key: string, origin: string }
       if (origin === instanceId) return
@@ -190,12 +197,12 @@ export function reactiveRedisDriver(opts: ReactiveRedisDriverOptions = {}): Driv
 
     async setItem(key, value, setOpts) {
       await base.setItem!(key, value, setOpts)
-      await pubsub.publish(STORAGE_CHANNEL, { event: 'update', key, origin: instanceId })
+      await pubsub.publish(channel, { event: 'update', key, origin: instanceId })
     },
 
     async removeItem(key, removeOpts) {
       await base.removeItem!(key, removeOpts)
-      await pubsub.publish(STORAGE_CHANNEL, { event: 'remove', key, origin: instanceId })
+      await pubsub.publish(channel, { event: 'remove', key, origin: instanceId })
     },
 
     watch(callback) {
