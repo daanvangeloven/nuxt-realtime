@@ -38,6 +38,7 @@
     "client/dist"
   ],
   "scripts": {
+    "postinstall": "nuxt-module-build prepare",
     "prepack": "nuxt-module-build prepare && nuxt-module-build build && pnpm run build:devtools-client",
     "dev": "pnpm run dev:prepare && pnpm run dev:playground",
     "dev:playground": "nuxi dev playground",
