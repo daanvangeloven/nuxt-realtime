@@ -1,4 +1,7 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 export default defineNuxtConfig({
   modules: [
     '@nuxt/eslint',
@@ -39,6 +42,11 @@ export default defineNuxtConfig({
       ],
       crawlLinks: true,
       autoSubfolderIndex: false,
+    },
+    externals: {
+      traceOptions: {
+        ignore: path => !existsSync(resolve('/', path)),
+      },
     },
   },
 

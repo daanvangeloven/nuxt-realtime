@@ -38,6 +38,7 @@
     "client/dist"
   ],
   "scripts": {
+    "postinstall": "nuxt-module-build prepare",
     "prepack": "nuxt-module-build prepare && nuxt-module-build build && pnpm run build:devtools-client",
     "dev": "pnpm run dev:prepare && pnpm run dev:playground",
     "dev:playground": "nuxi dev playground",
@@ -80,13 +81,13 @@
     "@nuxt/module-builder": "^1.0.2",
     "@nuxt/schema": "^4.4.7",
     "@nuxt/test-utils": "^3.23.0",
-    "@types/node": "latest",
+    "@types/node": "^26.2.0",
     "changelogen": "^0.6.2",
     "eslint": "^9.39.5",
     "husky": "^9.1.7",
     "ioredis": "^5.0.0",
     "lint-staged": "^16.2.7",
-    "nuxt": "^4.4.7",
+    "nuxt": "^4.5.1",
     "playwright-core": "^1.62.1",
     "typescript": "~5.9.3",
     "unstorage": "latest",
