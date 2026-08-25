@@ -333,19 +333,15 @@ export default defineNuxtModule<ModuleOptions>({
     }
 
     nuxt.hook('nitro:config', (nitroConfig) => {
+      // With `redis` set, the server plugin mounts the real driver at runtime, so register a
+      // memory placeholder here and ignore `options.storage` so it can't shadow it.
+      const memoryOverride = options.redis ? {} : options.storage
+      // Two mounts: `nuxt-realtime` is client-facing (storage:get/set reach every key in it);
+      // `_nuxt-realtime` holds module state and is never addressable from a socket event.
+      // The mount itself is the trust boundary, not a prefix check.
       nitroConfig.storage ??= {}
-      // When `redis` is set the reactive driver is mounted at runtime by the
-      // server plugin; register a memory placeholder so Nitro does not complain
-      // about an unconfigured mount.
-      if (!options.redis) {
-        nitroConfig.storage['nuxt-realtime'] = {
-          driver: 'memory',
-          ...options.storage,
-        }
-      }
-      else {
-        nitroConfig.storage['nuxt-realtime'] = { driver: 'memory' }
-      }
+      nitroConfig.storage['nuxt-realtime'] = { driver: 'memory', ...memoryOverride }
+      nitroConfig.storage['_nuxt-realtime'] = { driver: 'memory', ...memoryOverride }
     })
 
     const cleanupConfig = options.cleanup === false
