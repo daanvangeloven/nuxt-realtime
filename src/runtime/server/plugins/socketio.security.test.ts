@@ -4,16 +4,8 @@ import memoryDriver from 'unstorage/drivers/memory'
 import { isRoomMember } from '../utils/room-registry'
 import { getLocksOwnedBy, getRoomKeys } from '../utils/lock'
 
-// Regression coverage for the storage trust boundary: module state (locks, presence, room
-// membership, connection records, leases) must never be reachable or forgeable through the
-// client-facing storage:get/storage:set/storage:subscribe events, and the cleanup job must
-// release that state through the same code path a client's lock:release/room:leave would use,
-// not just delete the lease and leave the reverse indexes orphaned.
-
-// Every prefix module state is stored under (see socketio.ts's isReservedKey doc comment),
-// plus `_lease:` itself. isReservedKey rejects the whole `_` namespace, but this list is kept
-// explicit so a future prefix added to the internal mount without updating this table fails
-// loudly here instead of silently falling through untested.
+// Every internal key prefix, kept explicit so a new prefix that forgets the `_` convention
+// fails loudly here instead of silently going untested.
 const RESERVED_PREFIXES = [
   '_lock:',
   '_lockinfo:',
@@ -34,18 +26,14 @@ const RESERVED_PREFIXES = [
 
 const RESERVED_KEYS: unknown[] = RESERVED_PREFIXES.map(prefix => `${prefix}some-target`)
 
-// storage:get ran isReservedKey outside its try/catch, so a non-string key threw out of the
-// listener instead of returning an error to the caller. These must be rejected the same way
-// a reserved-prefix string is, not crash the handler.
+// Non-string/empty keys must be rejected like a reserved prefix, not throw.
 const INVALID_KEYS: unknown[] = ['', null, undefined, 42, {}]
 
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-// Mirrors createRealtimeTestStorage() in socketio.test.ts, but mounts both the client-facing
-// and internal storage namespaces so tests can wire up useStorage() to route by mount name,
-// the way the real plugin does post-0002.
+// Mounts both storage namespaces so useStorage() can be routed by mount name, like the plugin.
 function createRealtimeTestStorages(): { client: Storage, internal: Storage } {
   const root = createStorage({ driver: memoryDriver() })
   root.mount('nuxt-realtime', memoryDriver())
@@ -167,6 +155,12 @@ describe('storage:get/set/subscribe reject every internal prefix and invalid key
     expect(fakeSocket.join).not.toHaveBeenCalled()
     expect(storageMock.setItem).not.toHaveBeenCalled()
   })
+
+  it.each([...RESERVED_KEYS, ...INVALID_KEYS])('storage:unsubscribe ignores %p without leaving a key room', (key) => {
+    handlers['storage:unsubscribe']!(key)
+
+    expect(fakeSocket.leave).not.toHaveBeenCalled()
+  })
 })
 
 describe('storage:get/set/subscribe still work for ordinary, non-underscore-prefixed keys', () => {
@@ -181,9 +175,7 @@ describe('storage:get/set/subscribe still work for ordinary, non-underscore-pref
   let handlers: Record<string, (...args: unknown[]) => unknown>
   let fakeSocket: { join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
 
-  // 'user_prefs' has an underscore, just not in position 0: the restriction is "starts with
-  // underscore", not "contains an underscore". 'chat:room:1' / 'room:abc:doc' exercise the
-  // colon-bearing keys the module's own docs recommend for scoping.
+  // 'user_prefs': underscore mid-string is fine, only a leading '_' is reserved.
   const VALID_KEYS = ['counter', 'user_prefs', 'chat:room:1', 'room:abc:doc']
 
   beforeEach(async () => {
@@ -355,9 +347,6 @@ describe('mount isolation: a client cannot forge module state through storage:se
         },
         nuxtRealtime: {},
       }),
-      // The real plugin calls useStorage('nuxt-realtime') for the client-facing handle and
-      // useStorage('_nuxt-realtime') for module state; route each to its own mount
-      // the way module.ts's two nitroConfig.storage entries do.
       useStorage: (name?: string) => (name === '_nuxt-realtime' ? internal : client),
     }))
 
@@ -380,16 +369,12 @@ describe('mount isolation: a client cannot forge module state through storage:se
 
     expect(callback).toHaveBeenCalledWith(expect.objectContaining({ success: false }))
     await expect(isRoomMember(internal, 'private-room', 'victim-conn')).resolves.toBe(false)
-    // Confirms the rejection happens before storage.setItem runs, not merely that
-    // isRoomMember can't see it.
+    // Rejected before storage.setItem runs, not just invisible to isRoomMember.
     await expect(client.getItem('_roommember:private-room:victim-conn')).resolves.toBeNull()
   })
 
   it('the client and internal mounts are separate stores: seeding the client mount directly still leaves room membership false', async () => {
-    // Bypasses storage:set/isReservedKey entirely. Room membership is read from the internal
-    // mount, so a key landing in the client mount, by whatever means, cannot affect that read.
-    // This is what makes the mount split itself the trust boundary, not just the guard tested
-    // above.
+    // Bypasses storage:set entirely which proves the mount split is the boundary, not just the guard.
     await client.setItem('_roommember:private-room:someone-else', true)
 
     await expect(isRoomMember(internal, 'private-room', 'someone-else')).resolves.toBe(false)
@@ -470,9 +455,7 @@ describe('cleanup job releases idle locks through releaseLock(), not just the le
       useRuntimeConfig: () => ({
         public: {
           nuxtRealtime: {
-            // Short interval/threshold so the test doesn't have to wait real-world cleanup
-            // defaults (idleThreshold defaults to an hour). Jitter is +-10% of cleanupInterval
-            // (see socketio.ts), so the first tick can land anywhere in [45ms, 55ms].
+            // Short interval/threshold to avoid waiting out real-world cleanup defaults.
             cleanup: { heartbeatInterval: 10_000, cleanupInterval: 50, idleThreshold: 10 },
             logging: { level: null, format: 'text' },
           },
@@ -496,8 +479,7 @@ describe('cleanup job releases idle locks through releaseLock(), not just the le
   })
 
   afterEach(async () => {
-    // Stops the cleanup interval started above; without this it keeps firing against a
-    // torn-down module after the test ends.
+    // Stop the cleanup interval so it doesn't keep firing after the test tears down.
     await Promise.all((hookHandlers['close'] ?? []).map(h => h()))
     vi.resetModules()
   })
@@ -506,19 +488,14 @@ describe('cleanup job releases idle locks through releaseLock(), not just the le
     const { socket } = await connect('socket-a', 'conn-1')
     await socket.handlers['lock:claim']![0]!({ key: 'doc-1', room: 'project-1' }, vi.fn())
 
-    // Sanity check: the claim actually landed (and tagged both reverse indexes) before we
-    // wait for cleanup to reap it, so a false negative below can't be "never claimed".
+    // Sanity check the claim landed before waiting for cleanup to reap it.
     await expect(getLocksOwnedBy(internal, 'conn-1')).resolves.toEqual(['doc-1'])
     await expect(getRoomKeys(internal, 'project-1')).resolves.toEqual(['doc-1'])
 
-    // Several cleanupInterval (50ms) ticks, comfortably past idleThreshold (10ms).
-    await wait(300)
+    await wait(300) // several cleanupInterval (50ms) ticks past idleThreshold (10ms)
 
-    // Before 0002, the cleanup job deleted only the raw `_lock:doc-1` key, leaving
-    // `_lockinfo:`/`_lockowner:`/`_ownerlocks:`/`_lockroom:`/`_roomkeys:` orphaned forever.
     await expect(getLocksOwnedBy(internal, 'conn-1')).resolves.toEqual([])
     await expect(getRoomKeys(internal, 'project-1')).resolves.toEqual([])
-    // ...and nothing told subscribers the lock was free, so they'd keep showing it as held.
     expect(ioEmits).toContainEqual({
       rooms: ['lock:doc-1', 'lockroom:project-1'],
       event: 'lock:changed',

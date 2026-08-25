@@ -35,18 +35,8 @@ interface EngineWithInternals {
 const EVENT_CHANNEL = 'nuxt-realtime:events'
 const LEASE_PREFIX = '_lease:'
 
-/**
- * Client-supplied storage keys must not reach into any internal namespace.
- *
- * Module state (`_lock:`, `_lockinfo:`, `_lockowner:`, `_ownerlocks:`, `_lockroom:`,
- * `_roomkeys:`, `_presence:`, `_connrooms:`, `_roommember:`, `_memberrooms:`,
- * `_roomcreated:`, `_roomclosing:`, `_conn:`, `_reclaiming:`, `_lease:`) shares the
- * `nuxt-realtime` mount with client-supplied keys, so the entire `_` prefix is reserved.
- *
- * Non-string keys are rejected here too: `storage:get` and `storage:set` run this check
- * outside their try/catch, so `key.startsWith` on a non-string would throw out of the
- * listener rather than returning an error to the caller.
- */
+// The entire `_` prefix is reserved for module state (`_lock:`, `_presence:`, `_conn:`,
+// `_lease:`, etc.). Also rejects non-string/empty keys so callers never throw on a bad payload.
 function isReservedKey(key: unknown): boolean {
   return typeof key !== 'string' || key.length === 0 || key.startsWith('_')
 }
@@ -87,10 +77,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
-  // Rejecting a key is otherwise silent for subscribe (no ack) and indistinguishable from
-  // "no value yet" for get, which makes a reserved key look like a sync bug. Warn in dev so
-  // the cause is obvious at the call site. Dev-only on purpose: a client controls this string,
-  // so warning in production would hand it a log-flooding primitive.
+  // Dev-only: warns why a reserved key was silently rejected.
   const warnReservedKey = (op: string, key: unknown) => {
     if (!import.meta.dev) return
     logger.warn(`${op} rejected for reserved key ${JSON.stringify(key)}: keys starting with "_" are reserved for internal module state`)
@@ -764,10 +751,8 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
   })
 
-  // One-time migration. Up to 0.2.x module state lived in the client-facing mount, so an
-  // upgraded deployment can still have `_lock:`/`_conn:`/`_roommember:` keys sitting in
-  // `nuxt-realtime` where clients can read them and the devtools storage panel lists them.
-  // All of it is ephemeral session state, so dropping it is safe; client keys are untouched.
+  // One-time migration: purge leftover internal keys (`_lock:`, `_conn:`, etc.) that pre-0.3
+  // stored in the client mount. Ephemeral session state, safe to drop.
   try {
     const staleInternalKeys = (await storage.getKeys()).filter(k => k.startsWith('_'))
     if (staleInternalKeys.length > 0) {
@@ -798,10 +783,8 @@ export default defineNitroPlugin(async (nitroApp) => {
           const dataKey = leaseKey.slice(LEASE_PREFIX.length)
           await internal.removeItem(leaseKey)
 
-          // A `_lock:` lease guards module state, not a client key. Removing the raw key left
-          // _lockinfo:/_lockowner:/_ownerlocks:/_lockroom:/_roomkeys: orphaned forever and told
-          // nobody, so the holder kept reporting ownedByMe while another client could claim the
-          // same lock. Go through releaseLock and broadcast, exactly like the grace sweep.
+          // A lock lease needs releaseLock() + broadcast, not a raw delete, or the
+          // reverse indexes (_lockowner:, _lockroom:, ...) orphan and the lock never frees.
           if (dataKey.startsWith('_lock:')) {
             const key = dataKey.slice('_lock:'.length)
             const owner = await getLockOwner(internal, key)
@@ -908,11 +891,9 @@ export default defineNitroPlugin(async (nitroApp) => {
     },
   }))
 
-  // Dev-only introspection endpoint backing the Nuxt DevTools "Realtime" tab.
-  // `devtoolsEnabled` comes from *public* runtime config, so it is overridable at runtime
-  // (NUXT_PUBLIC_NUXT_REALTIME_DEVTOOLS_ENABLED=true). This endpoint dumps every storage key
-  // and value, all connections, and all lock owner info, so gate it on the build-time dev
-  // flag as well and let the config option only ever turn it off.
+  // Dumps all storage/connections/locks for the DevTools "Realtime" tab, so gate on the
+  // build-time dev flag too, since devtoolsEnabled is public runtime config and can be
+  // flipped on at runtime via env var.
   if (devtoolsEnabled && import.meta.dev) {
     nitroApp.router.use('/__nuxt-realtime__/devtools', defineEventHandler(async (event) => {
       const query = getQuery(event)
