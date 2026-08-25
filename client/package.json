@@ -8,7 +8,7 @@
   },
   "devDependencies": {
     "@iconify-json/carbon": "^1.2.20",
-    "@nuxt/devtools-ui-kit": "3.2.4",
-    "nuxt": "^4.4.7"
+    "@nuxt/devtools-ui-kit": "3.4.2",
+    "nuxt": "^4.5.1"
   }
 }
