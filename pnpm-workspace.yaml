@@ -12,6 +12,7 @@ onlyBuiltDependencies:
 
 overrides:
   '@nuxt/devtools': '>=3.3.1'
+  '@vue/compiler-sfc': ^3.5.41
   brace-expansion@>=1.0.0 <2.0.0: '>=1.1.18 <2.0.0'
   brace-expansion@>=2.0.0 <3.0.0: '>=2.1.4 <3.0.0'
   brace-expansion@>=5.0.0 <6.0.0: '>=5.0.9'
