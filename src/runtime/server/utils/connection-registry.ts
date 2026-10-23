@@ -1,18 +1,21 @@
 import type { Storage } from 'unstorage'
 import { claimOnce } from './lock'
+import { safeEqual } from './guards'
 
 export interface ConnectionRecord {
   socketId: string
   info: unknown
   /** Set when the connection has disconnected and is waiting to be reclaimed; null while active. */
   staleAt: number | null
+  /** Server-issued proof of ownership. A reconnect must present it to reclaim the id. */
+  secret?: string
 }
 
 export interface ConnectionRegistry {
   /** Registers a brand-new connectionId (no prior entry). */
-  register: (connectionId: string, socketId: string, info?: unknown) => Promise<void>
-  /** Remaps a stale entry to a new socketId and clears staleness. Returns false if no entry existed or the entry is still active (owned by a live connection). */
-  reclaim: (connectionId: string, socketId: string) => Promise<boolean>
+  register: (connectionId: string, socketId: string, info?: unknown, secret?: string) => Promise<void>
+  /** Remaps a stale entry to a new socketId and clears staleness. Returns false if no entry existed, the entry is still active (owned by a live connection), or the record has a secret that `secret` does not match. */
+  reclaim: (connectionId: string, socketId: string, secret?: string) => Promise<boolean>
   lookup: (connectionId: string) => Promise<ConnectionRecord | null>
   /** Marks a connection as disconnected, starting its grace period. Storage write only, no timer. */
   markStale: (connectionId: string, socketId: string) => Promise<void>
@@ -30,11 +33,11 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
   const { staleGraceMs } = options
 
   return {
-    async register(connectionId, socketId, info = null) {
-      await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { socketId, info, staleAt: null })
+    async register(connectionId, socketId, info = null, secret) {
+      await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { socketId, info, staleAt: null, ...(secret && { secret }) })
     },
 
-    async reclaim(connectionId, socketId) {
+    async reclaim(connectionId, socketId, secret) {
       // Concurrent reconnects can both read the same stale record before either writes back,
       // so the read-check-write below is only safe done by one claimant at a time. `claimOnce`
       // (optimistic write-then-verify, race-free regardless of storage driver) guards it as a
@@ -48,6 +51,8 @@ export function createConnectionRegistry(storage: Storage, options: { staleGrace
         // A connectionId is client-supplied, so a live (non-stale) record belongs to a socket
         // that's still connected: refuse to hand its identity to a different socket.
         if (!existing || existing.staleAt === null) return false
+        // The id alone is not a credential: it is broadcast to other clients as lock/presence owner.
+        if (existing.secret !== undefined && !(typeof secret === 'string' && safeEqual(existing.secret, secret))) return false
         await storage.setItem<ConnectionRecord>(PREFIX + connectionId, { ...existing, socketId, staleAt: null })
         return true
       }

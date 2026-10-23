@@ -124,4 +124,28 @@ describe('plugin.client - auth passthrough', () => {
 
     socket.close()
   })
+
+  it('stores the secret the server issues and presents it on the next connection', async () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+    })
+    io.on('connection', (serverSocket) => {
+      const { connectionId } = serverSocket.handshake.auth as { connectionId: string }
+      serverSocket.emit('connection:identity', { connectionId, secret: 's3cret' })
+    })
+
+    const socket = await loadPlugin()
+    await new Promise<void>(resolve => socket.on('connect', resolve))
+    expect(capturedAuth).not.toHaveProperty('connectionSecret')
+    await vi.waitFor(() => expect(store.get('nuxt-realtime:connectionSecret')).toMatch(/:s3cret$/))
+
+    socket.disconnect().connect()
+    await new Promise<void>(resolve => socket.once('connect', resolve))
+    expect(capturedAuth).toEqual({ connectionId: expect.any(String), connectionSecret: 's3cret' })
+
+    socket.close()
+    vi.unstubAllGlobals()
+  })
 })

@@ -84,4 +84,12 @@ describe('presence', () => {
       await expect(getRoomsForConnection(storage, 'never-joined')).resolves.toEqual([])
     })
   })
+
+  it('does not list members of a room whose id merely extends this one with a colon', async () => {
+    await joinPresence(storage, 'a', 'conn-1')
+    await joinPresence(storage, 'a:b', 'conn-2')
+
+    await expect(getPresenceSnapshot(storage, 'a')).resolves.toEqual({ 'conn-1': null })
+    await expect(getPresenceSnapshot(storage, 'a:b')).resolves.toEqual({ 'conn-2': null })
+  })
 })

@@ -5,6 +5,7 @@ import type { RealtimeSocket } from './types'
 import { useRealtimeLogger } from './composables/useRealtimeLogger'
 
 const CONNECTION_ID_STORAGE_KEY = 'nuxt-realtime:connectionId'
+const CONNECTION_SECRET_STORAGE_KEY = 'nuxt-realtime:connectionSecret'
 
 function generateId(): string {
   try {
@@ -27,6 +28,32 @@ function getOrCreateConnectionId(): string {
   catch {
     // fall back to an id that's stable for this page load only if sessionStorage is unavailable.
     return generateId()
+  }
+}
+
+// The server issues a secret per connectionId and requires it to reclaim that id after a
+// disconnect, since the id itself is visible to other clients. Stored as `id:secret` so a secret
+// is never sent for a different id than the one it was issued for.
+function readConnectionSecret(connectionId: string): string | undefined {
+  try {
+    const stored = sessionStorage.getItem(CONNECTION_SECRET_STORAGE_KEY)
+    const separator = stored?.indexOf(':') ?? -1
+    if (stored && separator > 0 && stored.slice(0, separator) === connectionId) return stored.slice(separator + 1)
+  }
+  catch {
+    // sessionStorage unavailable: reconnects just can't reclaim, they get a fresh identity
+  }
+  return undefined
+}
+
+function storeConnectionSecret(connectionId: string, secret: string): void {
+  try {
+    // Per-tab reclaim token, verified server-side. Under XSS the live socket is already usable, so storing it adds no exposure.
+    // codeql[js/clear-text-storage-of-sensitive-data]
+    sessionStorage.setItem(CONNECTION_SECRET_STORAGE_KEY, `${connectionId}:${secret}`)
+  }
+  catch {
+    // see readConnectionSecret
   }
 }
 
@@ -60,8 +87,13 @@ export default defineNuxtPlugin<{ realtimeSocket: RealtimeSocket, realtimeConnec
       if (typeof ctx.auth.connectionId === 'string') {
         connectionId.value = ctx.auth.connectionId
       }
-      cb(ctx.auth)
+      const connectionSecret = typeof ctx.auth.connectionId === 'string' ? readConnectionSecret(ctx.auth.connectionId) : undefined
+      cb(connectionSecret ? { ...ctx.auth, connectionSecret } : ctx.auth)
     },
+  })
+
+  socket.on('connection:identity', ({ connectionId: id, secret }) => {
+    storeConnectionSecret(id, secret)
   })
 
   socket.on('connect', () => {

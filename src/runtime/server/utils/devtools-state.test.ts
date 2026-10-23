@@ -152,7 +152,7 @@ describe('getPresenceOverview', () => {
   it('resolves room and info via the reverse index, without parsing the combined key', async () => {
     const storage = fakeStorage({
       '_connrooms:conn-1:document:123': true,
-      '_presence:document:123:conn-1': { name: 'Alice' },
+      '_presence:document%3A123:conn-1': { name: 'Alice' },
     })
 
     expect(await getPresenceOverview(storage, ['conn-1'])).toEqual([

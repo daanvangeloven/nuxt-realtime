@@ -1031,6 +1031,7 @@ describe('devtools instrumentation', () => {
       rooms: new Set(['socket-abc']),
       join: vi.fn(),
       leave: vi.fn(),
+      emit: vi.fn(),
       to: vi.fn().mockReturnValue({ emit: vi.fn() }),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         (handlers[event] ??= []).push(handler)
@@ -1069,18 +1070,19 @@ describe('lock features: connectionId, rooms, ttl, meta, forceRelease', () => {
     return Promise.all((hookHandlers[name] ?? []).map(h => h(...args)))
   }
 
-  function makeFakeSocket(id: string, connectionId?: string) {
+  function makeFakeSocket(id: string, connectionId?: string, connectionSecret?: string) {
     const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {}
     const rooms = new Set([id])
     const toEmits: Array<{ rooms: string[], event: string, data: unknown }> = []
     return {
       id,
-      handshake: { auth: connectionId ? { connectionId } : {} },
+      handshake: { auth: connectionId ? { connectionId, connectionSecret } : {} },
       rooms,
       handlers,
       toEmits,
       join: vi.fn((room: string) => rooms.add(room)),
       leave: vi.fn((room: string) => rooms.delete(room)),
+      emit: vi.fn(),
       to: vi.fn((r: string | string[]) => ({
         emit: vi.fn((event: string, data: unknown) => {
           toEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
@@ -1092,10 +1094,13 @@ describe('lock features: connectionId, rooms, ttl, meta, forceRelease', () => {
     }
   }
 
-  async function connect(id: string, connectionId?: string) {
-    const socket = makeFakeSocket(id, connectionId)
+  async function connect(id: string, connectionId?: string, connectionSecret?: string) {
+    const socket = makeFakeSocket(id, connectionId, connectionSecret)
     await connectionHandler!(socket)
-    return { socket }
+    // Identity resolution is async and not awaited by the connection handler.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const identity = socket.emit.mock.calls.find(([event]) => event === 'connection:identity')
+    return { socket, secret: (identity?.[1] as { secret: string } | undefined)?.secret }
   }
 
   beforeEach(async () => {
@@ -1182,12 +1187,26 @@ describe('lock features: connectionId, rooms, ttl, meta, forceRelease', () => {
     // Simulate a disconnect (starts the grace period) followed by a fast reconnect with the
     // same connectionId but a new socket.id, before the grace period lapses.
     await Promise.all(first.socket.handlers['disconnect']!.map(h => h()))
-    const second = await connect('socket-b', 'conn-1')
+    const second = await connect('socket-b', 'conn-1', first.secret)
 
     // Ownership is unaffected: releasing with the reclaimed connection still succeeds.
     const callback = vi.fn()
     await second.socket.handlers['lock:release']![0]!({ key: 'doc-1' }, callback)
     expect(callback).toHaveBeenCalledWith({ success: true })
+  })
+
+  it('does not let a socket that only knows the public connectionId reclaim it during the grace period', async () => {
+    const victim = await connect('socket-a', 'conn-1')
+    await victim.socket.handlers['lock:claim']![0]!({ key: 'doc-1' }, vi.fn())
+    await Promise.all(victim.socket.handlers['disconnect']!.map(h => h()))
+
+    for (const guess of [undefined, 'not-the-secret']) {
+      const attacker = await connect('socket-evil', 'conn-1', guess)
+      const callback = vi.fn()
+      await attacker.socket.handlers['lock:release']![0]!({ key: 'doc-1' }, callback)
+      expect(callback).toHaveBeenCalledWith({ success: false })
+    }
+    await expect(storage.getItem('_lock:doc-1')).resolves.toEqual(expect.objectContaining({ owner: 'conn-1' }))
   })
 
   it('releases a stale connection\'s locks once the grace period lapses without a reconnect', async () => {
@@ -1375,6 +1394,7 @@ describe('presence', () => {
       toEmits,
       join: vi.fn((room: string) => rooms.add(room)),
       leave: vi.fn((room: string) => rooms.delete(room)),
+      emit: vi.fn(),
       to: vi.fn((r: string | string[]) => ({
         emit: vi.fn((event: string, data: unknown) => {
           toEmits.push({ rooms: Array.isArray(r) ? r : [r], event, data })
@@ -1573,6 +1593,7 @@ describe('rooms', () => {
       handlers,
       join: vi.fn((room: string) => rooms.add(room)),
       leave: vi.fn((room: string) => rooms.delete(room)),
+      emit: vi.fn(),
       to: vi.fn(() => ({ emit: vi.fn() })),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         (handlers[event] ??= []).push(handler)

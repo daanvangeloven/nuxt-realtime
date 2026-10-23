@@ -106,6 +106,8 @@ export interface ServerToClientEvents {
   'event:received': (data: EventReceivedPayload) => void
   'lock:changed': (data: LockChangedPayload) => void
   'presence:changed': (data: PresenceChangedPayload) => void
+  /** Sent once per new connectionId. The secret must be presented on reconnect to reclaim the id. */
+  'connection:identity': (data: { connectionId: string, secret: string }) => void
 }
 
 export interface ClientToServerEvents {
