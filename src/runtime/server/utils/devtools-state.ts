@@ -1,4 +1,5 @@
 // side-effect-free state helpers for the Nuxt Realtime devtools tab
+import { encodeSegment } from './keys'
 
 /**
  * Deliberately excludes noisy, non-state-changing events (`storage:get`, `storage:heartbeat`).
@@ -219,11 +220,11 @@ export async function getPresenceOverview(storage: DevtoolsStorageLike, connecti
   const entries: PresenceSnapshotEntry[] = []
 
   for (const connectionId of connectionIds) {
-    const prefix = `_connrooms:${connectionId}:`
+    const prefix = `_connrooms:${encodeSegment(connectionId)}:`
     const roomKeys = await storage.getKeys(prefix)
     for (const roomKey of roomKeys) {
       const room = roomKey.slice(prefix.length)
-      const info = await storage.getItem(`_presence:${room}:${connectionId}`)
+      const info = await storage.getItem(`_presence:${encodeSegment(room)}:${connectionId}`)
       entries.push({ room, connectionId, info: safeSerialize(info) })
     }
   }
@@ -240,7 +241,7 @@ export async function getRoomMembershipSnapshot(storage: DevtoolsStorageLike, co
   const entries: RoomMembershipEntry[] = []
 
   for (const connectionId of connectionIds) {
-    const prefix = `_memberrooms:${connectionId}:`
+    const prefix = `_memberrooms:${encodeSegment(connectionId)}:`
     const roomKeys = await storage.getKeys(prefix)
     for (const roomKey of roomKeys) {
       entries.push({ roomId: roomKey.slice(prefix.length), connectionId })

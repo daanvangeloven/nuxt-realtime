@@ -3,6 +3,7 @@ import type { StorageMounts } from 'nitropack'
 import type { ServerOptions } from 'engine.io'
 import type { Server, Socket } from 'socket.io'
 import type { ReactiveRedisDriverOptions } from './drivers/redis'
+import type { RealtimeLimits } from './runtime/server/utils/guards'
 
 declare module 'nitropack' {
   interface NitroRuntimeHooks {
@@ -85,6 +86,27 @@ declare module 'nitropack' {
     'nuxt-realtime:canJoinRoom': (ctx: { roomId: string, connectionId: string, socket: Socket, allow: boolean }) => void | Promise<void>
 
     /**
+     * Called before a connection subscribes to an event channel (`event:subscribe`, including
+     * the `event:*` wildcards) or a lock (`lock:subscribe`). Allowed by default; set
+     * `ctx.allow = false` to deny. A hook that throws denies. Without a hook any client can read
+     * every event and every lock owner, so register one if channels carry anything private.
+     *
+     * @example
+     * ```ts
+     * nitroApp.hooks.hook('nuxt-realtime:canSubscribe', (ctx) => {
+     *   if (ctx.kind === 'event') ctx.allow = !ctx.name.startsWith('admin:')
+     * })
+     * ```
+     */
+    'nuxt-realtime:canSubscribe': (ctx: { kind: 'event' | 'lock', name: string, connectionId: string, socket: Socket, allow: boolean }) => void | Promise<void>
+
+    /**
+     * Called before an `event:publish` is broadcast. Allowed by default; set `ctx.allow = false`
+     * to deny. A hook that throws denies.
+     */
+    'nuxt-realtime:canPublish': (ctx: { channel: string, data: unknown, connectionId: string, socket: Socket, allow: boolean }) => void | Promise<void>
+
+    /**
      * Called once when a room's membership goes from 0 to 1, the natural place for
      * provisioning logic (e.g. creating a database record for the room).
      *
@@ -158,6 +180,7 @@ declare module '@nuxt/schema' {
       }
       eventLogSize?: number
       lock: { defaultTtl: number | undefined, staleGraceMs: number }
+      limits?: Partial<RealtimeLimits>
     }
   }
 }
@@ -195,6 +218,13 @@ export interface CleanupOptions {
 }
 
 export interface ModuleOptions {
+  /**
+   * Abuse limits enforced per connection. Each can be raised or lowered.
+   *
+   * @default { maxKeyLength: 256, maxValueBytes: 262_144, maxKeysPerSocket: 1000, maxEventsPerSecond: 120 }
+   */
+  limits?: Partial<RealtimeLimits>
+
   /**
    * Storage configuration for the realtime module. Accepts any Nitro storage driver config.
    * For cross-server sync across multiple instances, use the `redis` option instead.
@@ -367,7 +397,13 @@ export default defineNuxtModule<ModuleOptions>({
       devtoolsEnabled,
     }
 
+    const corsOrigin = (options.socketio?.serverOptions?.cors as { origin?: unknown } | undefined)?.origin
+    if (options.socketio?.serverUrl && corsOrigin === undefined && !options.socketio.serverOptions?.allowRequest) {
+      logger.warn('nuxt-realtime: `socketio.serverUrl` is set but `socketio.serverOptions.cors.origin` is not, so the realtime server only accepts same-origin connections. Set `cors.origin` to the origin(s) of this app.')
+    }
+
     nuxt.options.runtimeConfig.nuxtRealtime = {
+      limits: options.limits,
       redis: options.redis,
       socketio: {
         // Shared with the client (`runtimeConfig.public.nuxtRealtime.socketPath`) so the

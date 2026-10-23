@@ -58,11 +58,11 @@
   },
   "dependencies": {
     "@nuxt/devtools-kit": "^3.2.2",
-    "@nuxt/kit": "^4.4.7",
-    "ofetch": "^1.4.1",
+    "@nuxt/kit": "^4.6.1",
+    "ofetch": "^1.5.1",
     "sirv": "^3.0.2",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4"
   },
   "peerDependencies": {
     "ioredis": ">=5"
@@ -73,26 +73,26 @@
     }
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.4.2",
-    "@commitlint/config-conventional": "^20.4.2",
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
     "@nuxt/devtools": "^3.3.1",
-    "@nuxt/eslint-config": "^1.15.2",
-    "@nuxt/fonts": "0.14.0",
-    "@nuxt/module-builder": "^1.0.2",
-    "@nuxt/schema": "^4.4.7",
-    "@nuxt/test-utils": "^3.23.0",
-    "@types/node": "^26.2.0",
+    "@nuxt/eslint-config": "^1.17.0",
+    "@nuxt/fonts": "1.0.1",
+    "@nuxt/module-builder": "^1.0.3",
+    "@nuxt/schema": "^4.6.1",
+    "@nuxt/test-utils": "^4.3.3",
+    "@types/node": "^26.6.5",
     "changelogen": "^0.6.2",
-    "eslint": "^9.39.5",
+    "eslint": "^10.12.0",
     "husky": "^9.1.7",
-    "ioredis": "^5.0.0",
-    "lint-staged": "^16.2.7",
-    "nuxt": "^4.5.1",
-    "playwright-core": "^1.62.1",
+    "ioredis": "^6.0.0",
+    "lint-staged": "^17.6.0",
+    "nuxt": "^4.6.1",
+    "playwright-core": "^1.64.1",
     "typescript": "~5.9.3",
-    "unstorage": "latest",
-    "vitest": "^4.1.8",
-    "vue-tsc": "^3.3.3"
+    "unstorage": "^1.17.6",
+    "vitest": "^5.0.5",
+    "vue-tsc": "^3.3.13"
   },
   "packageManager": "pnpm@10.19.0+sha512.c9fc7236e92adf5c8af42fd5bf1612df99c2ceb62f27047032f4720b33f8eacdde311865e91c411f2774f618d82f320808ecb51718bfa82c060c4ba7c76a32b8"
 }

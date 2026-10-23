@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import type { Duplex } from 'node:stream'
+import type { StorageValue } from 'unstorage'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineNitroPlugin, useStorage, useRuntimeConfig } from 'nitropack/runtime'
 import { Server as Engine, type ServerOptions } from 'engine.io'
@@ -8,6 +10,7 @@ import { createRealtimeLogger } from '../utils/logger'
 import { claimLock, getLockOwner, getLockOwnerInfo, getLockRoom, getLocksOwnedBy, getRoomKeys, releaseLock, touchLease } from '../utils/lock'
 import type { PubSubDriver } from '../utils/pubsub'
 import { createConnectionRegistry } from '../utils/connection-registry'
+import { DEFAULT_LIMITS, createRateLimiter, isOriginAllowed, isReservedKey as isReservedKeyWithin, isValidKey as isValidKeyWithin, isWithinSize, normalizeStorageKey, type RealtimeLimits } from '../utils/guards'
 import { getPresenceSnapshot, getRoomsForConnection as getPresenceRoomsForConnection, joinPresence, leavePresence } from '../utils/presence'
 import { getRoomsForConnection, isRoomMember, joinRoom, leaveRoom } from '../utils/room-registry'
 import type { LockClaimPayload, LockReleasePayload, LockRoomSnapshot, PresenceJoinPayload } from '../../types'
@@ -34,19 +37,6 @@ interface EngineWithInternals {
 
 const EVENT_CHANNEL = 'nuxt-realtime:events'
 const LEASE_PREFIX = '_lease:'
-
-// The entire `_` prefix is reserved for module state (`_lock:`, `_presence:`, `_conn:`,
-// `_lease:`, etc.). Also rejects non-string/empty keys so callers never throw on a bad payload.
-function isReservedKey(key: unknown): boolean {
-  return typeof key !== 'string' || key.length === 0 || key.startsWith('_')
-}
-
-// Lock/presence/room keys are interpolated straight into storage keys (e.g. `_lock:${key}`),
-// so a non-string payload (an object, a number, undefined) would silently collide unrelated
-// locks/rooms instead of erroring. Guard the trust boundary the same way storage:set does.
-function isValidKey(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0
-}
 
 function isValidTtl(value: unknown): value is number | undefined {
   return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
@@ -77,6 +67,10 @@ export default defineNitroPlugin(async (nitroApp) => {
   const cleanupConfig = realtimePublicConfig.cleanup
   const logger = createRealtimeLogger(realtimePublicConfig.logging.level, realtimePublicConfig.logging.format)
 
+  const limits: RealtimeLimits = { ...DEFAULT_LIMITS, ...(config as { nuxtRealtime?: { limits?: Partial<RealtimeLimits> } }).nuxtRealtime?.limits }
+  const isReservedKey = (key: unknown) => isReservedKeyWithin(key, limits.maxKeyLength)
+  const isValidKey = (value: unknown): value is string => isValidKeyWithin(value, limits.maxKeyLength)
+
   // Dev-only: warns why a reserved key was silently rejected.
   const warnReservedKey = (op: string, key: unknown) => {
     if (!import.meta.dev) return
@@ -105,7 +99,12 @@ export default defineNitroPlugin(async (nitroApp) => {
   }
 
   const io = new Server()
-  const engine = new Engine({ ...serverOptions })
+  // Cross-site WebSocket hijacking guard, applied to polling (via Engine.IO) and to the
+  // WebSocket upgrade below (which bypasses Engine.IO's own verify step).
+  const corsOrigin = (serverOptions?.cors as { origin?: Parameters<typeof isOriginAllowed>[1] } | undefined)?.origin
+  const allowRequest: NonNullable<ServerOptions['allowRequest']> = serverOptions?.allowRequest
+    ?? ((req, fn) => fn(null, isOriginAllowed(req, corsOrigin)))
+  const engine = new Engine({ ...serverOptions, allowRequest })
 
   if (devtoolsEnabled) {
     devtoolsState.io = io as unknown as DevtoolsIoLike
@@ -240,6 +239,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     if (connectionId !== undefined && !isValidKey(connectionId)) {
       connectionId = undefined
     }
+    const connectionSecret = typeof socket.handshake?.auth?.connectionSecret === 'string' ? socket.handshake.auth.connectionSecret : undefined
     let identity = connectionId ?? socket.id
 
     // The identify/reclaim work below is async, but event listeners must be registered
@@ -262,18 +262,23 @@ export default defineNitroPlugin(async (nitroApp) => {
       if (typeof identifyCtx.connectionId === 'string' && identifyCtx.connectionId.length > 0) {
         connectionId = identifyCtx.connectionId
       }
-      const reclaimed = await registry.reclaim(connectionId, socket.id)
+      const reclaimed = await registry.reclaim(connectionId, socket.id, connectionSecret)
       if (!reclaimed) {
-        // Either unclaimed (fresh id) or still owned by a different, live socket. In the
-        // latter case registering over it would hijack that connection's identity, so treat
-        // the supplied connectionId as unusable and fall back to socket.id instead.
+        // Either unclaimed (fresh id), owned by a different live socket, or a stale record whose
+        // reconnect secret didn't match. In the latter two registering over it would hijack that
+        // connection's identity, so treat the supplied connectionId as unusable and fall back to
+        // socket.id instead.
         const existing = await registry.lookup(connectionId)
         if (existing) {
-          logger.warn(`connectionId "${connectionId}" is already in use by an active connection; falling back to socket.id for this connection`)
+          logger.warn(`connectionId "${connectionId}" is already in use or the reconnect secret did not match; falling back to socket.id for this connection`)
           connectionId = undefined
         }
         else {
-          await registry.register(connectionId, socket.id, identifyCtx.info)
+          // The id is public (broadcast as lock/presence owner), so reclaiming it after a
+          // disconnect requires this secret, which only this client ever receives.
+          const secret = randomUUID()
+          await registry.register(connectionId, socket.id, identifyCtx.info, secret)
+          socket.emit('connection:identity', { connectionId, secret })
         }
       }
       identity = connectionId ?? socket.id
@@ -286,6 +291,41 @@ export default defineNitroPlugin(async (nitroApp) => {
     // across instances.
     const presenceRooms = new Set<string>()
     const joinedRooms = new Set<string>()
+    const writtenKeys = new Set<string>()
+    const withinRate = createRateLimiter(limits.maxEventsPerSecond)
+    const hasRoomCapacity = () => socket.rooms.size < limits.maxKeysPerSocket
+
+    type Ack = (response?: unknown) => void
+    // Every client event goes through here: a malformed payload (null, a primitive) or a missing
+    // or non-function ack must never become an unhandled rejection, which would crash a Node
+    // process that isn't running behind Nitro's own handler. Also the per-socket rate limit.
+    const on = <P>(event: string, handler: (payload: P, callback?: Ack) => unknown) => {
+      socket.on(event, async (payload: P, callback?: unknown) => {
+        if (!withinRate()) {
+          logger.debug(`${event} dropped: rate limit exceeded for`, socket.id)
+          return
+        }
+        try {
+          await handler(payload, typeof callback === 'function' ? callback as Ack : undefined)
+        }
+        catch (error) {
+          logger.debug(`${event} rejected a malformed request:`, error)
+        }
+      })
+    }
+
+    // Subscribe/publish authorization. Default is allow, like canJoinRoom, so apps opt in by
+    // registering a hook. A hook that throws fails closed.
+    async function runAuthHook(name: string, ctx: { allow: boolean }, call: () => unknown): Promise<boolean> {
+      try {
+        await call()
+      }
+      catch (error) {
+        logger.error(`${name} hook failed:`, error)
+        ctx.allow = false
+      }
+      return ctx.allow
+    }
 
     // The single per-room auth checkpoint, shared by room:join, presence:join, and
     // lock:claim(room). A connection only ever passes nuxt-realtime:canJoinRoom once per
@@ -322,76 +362,77 @@ export default defineNitroPlugin(async (nitroApp) => {
     }
 
     // Storage operations
-    socket.on('storage:get', async (key: string, callback) => {
+    on('storage:get', async (key: string, callback) => {
       if (isReservedKey(key)) {
         warnReservedKey('storage:get', key)
-        callback(null)
+        callback?.(null)
         return
       }
       try {
-        const value = await storage.getItem(key)
-        callback(value)
+        callback?.(await storage.getItem(normalizeStorageKey(key)))
       }
       catch (error) {
         logger.error('Storage get error:', error)
-        callback(null)
+        callback?.(null)
       }
     })
 
-    socket.on('storage:set', async ({ key, value }, callback) => {
+    on('storage:set', async ({ key, value }: { key: string, value: StorageValue }, callback) => {
       if (isReservedKey(key)) {
         warnReservedKey('storage:set', key)
-        if (callback) {
-          callback({ success: false, error: 'Key is reserved for internal use' })
-        }
+        callback?.({ success: false, error: 'Key is reserved for internal use' })
+        return
+      }
+      // The driver normalizes keys itself, so everything below uses the normalized form the
+      // reserved check was applied to.
+      const normalizedKey = normalizeStorageKey(key)
+      if (!isWithinSize(value, limits.maxValueBytes)) {
+        callback?.({ success: false, error: 'Value too large' })
+        return
+      }
+      if (!writtenKeys.has(normalizedKey) && writtenKeys.size >= limits.maxKeysPerSocket) {
+        callback?.({ success: false, error: 'Too many keys written by this connection' })
         return
       }
       try {
-        await storage.setItem(key, value)
-        await touchLease(internal, key)
-        socket.to(`key:${key}`).emit('storage:updated', { key, value })
-        record('storage:set', socket.id, key)
-
-        if (callback) {
-          callback({
-            success: true,
-            status: 'ok',
-          })
-        }
+        await storage.setItem(normalizedKey, value)
+        writtenKeys.add(normalizedKey)
+        await touchLease(internal, normalizedKey)
+        socket.to(`key:${normalizedKey}`).emit('storage:updated', { key: normalizedKey, value })
+        record('storage:set', socket.id, normalizedKey)
+        callback?.({ success: true, status: 'ok' })
       }
       catch (error) {
         logger.error('Storage set error:', error)
-        if (callback) {
-          callback({
-            success: false,
-            error: 'Error while updating storage value',
-          })
-        }
+        callback?.({ success: false, error: 'Error while updating storage value' })
       }
     })
 
-    socket.on('storage:subscribe', async (key: string) => {
+    on('storage:subscribe', async (key: string) => {
       if (isReservedKey(key)) {
         warnReservedKey('storage:subscribe', key)
         return
       }
-      socket.join(`key:${key}`)
-      record('storage:subscribe', socket.id, key)
+      const normalizedKey = normalizeStorageKey(key)
+      if (!socket.rooms.has(`key:${normalizedKey}`) && !hasRoomCapacity()) return
+      socket.join(`key:${normalizedKey}`)
+      record('storage:subscribe', socket.id, normalizedKey)
       try {
-        await touchLease(internal, key)
+        await touchLease(internal, normalizedKey)
       }
       catch (error) {
         logger.error('Lease touch error on subscribe:', error)
       }
     })
 
-    socket.on('storage:unsubscribe', (key: string) => {
+    on('storage:unsubscribe', (key: string) => {
       if (isReservedKey(key)) return
-      socket.leave(`key:${key}`)
-      record('storage:unsubscribe', socket.id, key)
+      const normalizedKey = normalizeStorageKey(key)
+      socket.leave(`key:${normalizedKey}`)
+      record('storage:unsubscribe', socket.id, normalizedKey)
     })
 
-    socket.on('storage:heartbeat', async () => {
+    on('storage:heartbeat', async () => {
       try {
         // Touch leases for all keys this socket is subscribed to, plus any locks it holds
         const storageRooms = [...socket.rooms].filter(r => r.startsWith('key:'))
@@ -406,8 +447,8 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     // Lock operations
-    socket.on('lock:claim', async ({ key, ownerInfo, room, ttl }: LockClaimPayload, callback) => {
-      if (!isValidKey(key) || (room !== undefined && !isValidKey(room)) || !isValidTtl(ttl)) {
+    on('lock:claim', async ({ key, ownerInfo, room, ttl }: LockClaimPayload, callback) => {
+      if (!isValidKey(key) || (room !== undefined && !isValidKey(room)) || !isValidTtl(ttl) || !isWithinSize(ownerInfo, limits.maxValueBytes)) {
         if (callback) callback({ success: false, owned: false, error: 'Invalid lock:claim payload' })
         return
       }
@@ -439,7 +480,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('lock:release', async ({ key, changed, meta }: LockReleasePayload, callback) => {
+    on('lock:release', async ({ key, changed, meta }: LockReleasePayload, callback) => {
       if (!isValidKey(key)) {
         if (callback) callback({ success: false, error: 'Invalid lock:release payload' })
         return
@@ -467,7 +508,17 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('lock:subscribe', async (key: string, callback) => {
+    on('lock:subscribe', async (key: string, callback) => {
+      if (!isValidKey(key)) {
+        callback?.({ key, owner: null, ownerInfo: null })
+        return
+      }
+      await identityReady
+      const ctx = { kind: 'lock' as const, name: key, connectionId: identity, socket, allow: true }
+      if (!(await runAuthHook('nuxt-realtime:canSubscribe', ctx, () => nitroApp.hooks.callHook('nuxt-realtime:canSubscribe', ctx))) || (!socket.rooms.has(`lock:${key}`) && !hasRoomCapacity())) {
+        callback?.({ key, owner: null, ownerInfo: null })
+        return
+      }
       socket.join(`lock:${key}`)
       try {
         const owner = await getLockOwner(internal, key)
@@ -484,11 +535,12 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('lock:unsubscribe', (key: string) => {
+    on('lock:unsubscribe', (key: string) => {
+      if (!isValidKey(key)) return
       socket.leave(`lock:${key}`)
     })
 
-    socket.on('lock:subscribeRoom', async (room: string, callback) => {
+    on('lock:subscribeRoom', async (room: string, callback) => {
       try {
         // Same authorization checkpoint as the write paths (room:join, presence:join,
         // lock:claim(room)): without it any connected client could guess a room id and read
@@ -514,11 +566,12 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('lock:unsubscribeRoom', (room: string) => {
+    on('lock:unsubscribeRoom', (room: string) => {
+      if (!isValidKey(room)) return
       socket.leave(`lockroom:${room}`)
     })
 
-    socket.on('lock:forceRelease', async ({ key }: { key: string }, callback) => {
+    on('lock:forceRelease', async ({ key }: { key: string }, callback) => {
       if (!isValidKey(key)) {
         if (callback) callback({ success: false, error: 'Invalid lock:forceRelease payload' })
         return
@@ -556,8 +609,8 @@ export default defineNitroPlugin(async (nitroApp) => {
 
     // Presence operations: "who's currently in room X", independent of whether they hold a
     // lock. Reuses the same opaque room string locks tag with; no new grouping concept.
-    socket.on('presence:join', async ({ room, info }: PresenceJoinPayload, callback) => {
-      if (!isValidKey(room)) {
+    on('presence:join', async ({ room, info }: PresenceJoinPayload, callback) => {
+      if (!isValidKey(room) || !isWithinSize(info, limits.maxValueBytes)) {
         if (callback) callback({ success: false, error: 'Invalid presence:join payload' })
         return
       }
@@ -579,7 +632,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('presence:leave', async ({ room }: { room: string }, callback) => {
+    on('presence:leave', async ({ room }: { room: string }, callback) => {
       if (!isValidKey(room)) {
         if (callback) callback({ success: false, error: 'Invalid presence:leave payload' })
         return
@@ -601,7 +654,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('presence:subscribeRoom', async (room: string, callback) => {
+    on('presence:subscribeRoom', async (room: string, callback) => {
       try {
         // Same authorization checkpoint as the write paths: without it any connected client
         // could guess a room id and read every member's id + info, which commonly carries app
@@ -623,7 +676,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Room membership: the explicit version of what presence:join/lock:claim(room) already
     // do implicitly via ensureRoomMembership. Scopes state/events client-side (see
     // useRealtimeRoom); server-side it's purely membership + lifecycle hooks + auth.
-    socket.on('room:join', async (roomId: string, callback) => {
+    on('room:join', async (roomId: string, callback) => {
       if (!isValidKey(roomId)) {
         if (callback) callback({ success: false, error: 'Invalid room:join payload' })
         return
@@ -643,7 +696,7 @@ export default defineNitroPlugin(async (nitroApp) => {
       }
     })
 
-    socket.on('room:leave', async (roomId: string, callback) => {
+    on('room:leave', async (roomId: string, callback) => {
       if (!isValidKey(roomId)) {
         if (callback) callback({ success: false, error: 'Invalid room:leave payload' })
         return
@@ -708,18 +761,35 @@ export default defineNitroPlugin(async (nitroApp) => {
     })
 
     // Event pub/sub operations
-    socket.on('event:subscribe', (channel: string) => {
+    on('event:subscribe', async (channel: string) => {
+      if (!isValidKey(channel)) return
+      await identityReady
+      const ctx = { kind: 'event' as const, name: channel, connectionId: identity, socket, allow: true }
+      if (!(await runAuthHook('nuxt-realtime:canSubscribe', ctx, () => nitroApp.hooks.callHook('nuxt-realtime:canSubscribe', ctx)))) return
+      if (!socket.rooms.has(`event:${channel}`) && !hasRoomCapacity()) return
       socket.join(`event:${channel}`)
       record('event:subscribe', socket.id, channel)
     })
 
-    socket.on('event:unsubscribe', (channel: string) => {
+    on('event:unsubscribe', (channel: string) => {
+      if (!isValidKey(channel)) return
       socket.leave(`event:${channel}`)
       record('event:unsubscribe', socket.id, channel)
     })
 
-    socket.on('event:publish', async ({ channel, data, includeSelf }, callback) => {
+    on('event:publish', async ({ channel, data, includeSelf }: { channel: string, data: unknown, includeSelf?: boolean }, callback) => {
+      if (!isValidKey(channel) || !isWithinSize(data, limits.maxValueBytes)) {
+        callback?.({ success: false, error: 'Invalid event:publish payload' })
+        return
+      }
       try {
+        await identityReady
+        const ctx = { channel, data, connectionId: identity, socket, allow: true }
+        if (!(await runAuthHook('nuxt-realtime:canPublish', ctx, () => nitroApp.hooks.callHook('nuxt-realtime:canPublish', ctx)))) {
+          callback?.({ success: false, error: 'Not allowed to publish to this channel' })
+          return
+        }
+
         // 1. Broadcast immediately to local subscribers (exact channel + wildcard rooms).
         //    Passing an array to .to() causes Socket.IO to deduplicate recipients, so a
         //    client subscribed to multiple matching rooms receives the event only once.
@@ -737,16 +807,11 @@ export default defineNitroPlugin(async (nitroApp) => {
         }
 
         record('event:publish', socket.id, channel)
-
-        if (callback) {
-          callback({ success: true })
-        }
+        callback?.({ success: true })
       }
       catch (error) {
         logger.error('Event publish error:', error)
-        if (callback) {
-          callback({ success: false, error: 'Error while publishing event' })
-        }
+        callback?.({ success: false, error: 'Error while publishing event' })
       }
     })
   })
@@ -885,8 +950,15 @@ export default defineNitroPlugin(async (nitroApp) => {
     websocket: {
       open(peer: unknown) {
         const { _internal, websocket } = peer as unknown as WebSocketPeer
-        engineWithInternals.prepare(_internal.nodeReq)
-        engineWithInternals.onWebSocket(_internal.nodeReq, _internal.nodeReq.socket, websocket)
+        allowRequest(_internal.nodeReq, (error, allowed) => {
+          if (error || !allowed) {
+            logger.warn('Rejected WebSocket upgrade: origin not allowed')
+            websocket.close(1008, 'Origin not allowed')
+            return
+          }
+          engineWithInternals.prepare(_internal.nodeReq)
+          engineWithInternals.onWebSocket(_internal.nodeReq, _internal.nodeReq.socket, websocket)
+        })
       },
     },
   }))

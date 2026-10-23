@@ -1,4 +1,5 @@
 import type { Storage } from 'unstorage'
+import { encodeSegment } from './keys'
 import { claimOnce } from './lock'
 
 const MEMBER_PREFIX = '_roommember:'
@@ -13,7 +14,7 @@ const CLOSING_MUTEX_TTL_MS = 5000
  * Whether `connectionId` is currently a member of `roomId`, without joining it.
  */
 export async function isRoomMember(storage: Storage, roomId: string, connectionId: string): Promise<boolean> {
-  return storage.hasItem(`${MEMBER_PREFIX}${roomId}:${connectionId}`)
+  return storage.hasItem(`${MEMBER_PREFIX}${encodeSegment(roomId)}:${connectionId}`)
 }
 
 /**
@@ -27,7 +28,7 @@ export async function isRoomMember(storage: Storage, roomId: string, connectionI
  * no-op.
  */
 export async function joinRoom(storage: Storage, roomId: string, connectionId: string): Promise<{ alreadyMember: boolean, firstMember: boolean }> {
-  const key = `${MEMBER_PREFIX}${roomId}:${connectionId}`
+  const key = `${MEMBER_PREFIX}${encodeSegment(roomId)}:${connectionId}`
   const alreadyMember = await storage.hasItem(key)
   if (alreadyMember) {
     return { alreadyMember: true, firstMember: false }
@@ -35,7 +36,7 @@ export async function joinRoom(storage: Storage, roomId: string, connectionId: s
 
   const firstMember = await claimOnce(storage, `${CREATED_MARKER_PREFIX}${roomId}`, connectionId)
   await storage.setItem(key, true)
-  await storage.setItem(`${MEMBER_ROOMS_PREFIX}${connectionId}:${roomId}`, true)
+  await storage.setItem(`${MEMBER_ROOMS_PREFIX}${encodeSegment(connectionId)}:${roomId}`, true)
   return { alreadyMember: false, firstMember }
 }
 
@@ -52,14 +53,14 @@ export async function joinRoom(storage: Storage, roomId: string, connectionId: s
  * clear a mutually-exclusive critical section instead.
  */
 export async function leaveRoom(storage: Storage, roomId: string, connectionId: string): Promise<{ left: boolean, nowEmpty: boolean }> {
-  const key = `${MEMBER_PREFIX}${roomId}:${connectionId}`
+  const key = `${MEMBER_PREFIX}${encodeSegment(roomId)}:${connectionId}`
   const left = await storage.hasItem(key)
   if (!left) {
     return { left: false, nowEmpty: false }
   }
 
   await storage.removeItem(key)
-  await storage.removeItem(`${MEMBER_ROOMS_PREFIX}${connectionId}:${roomId}`)
+  await storage.removeItem(`${MEMBER_ROOMS_PREFIX}${encodeSegment(connectionId)}:${roomId}`)
 
   const closingKey = `${CLOSING_PREFIX}${roomId}`
   const wonClosingCheck = await claimOnce(storage, closingKey, connectionId, CLOSING_MUTEX_TTL_MS)
@@ -67,7 +68,7 @@ export async function leaveRoom(storage: Storage, roomId: string, connectionId: 
     return { left: true, nowEmpty: false }
   }
   try {
-    const remaining = (await storage.getKeys(`${MEMBER_PREFIX}${roomId}:`)).length
+    const remaining = (await storage.getKeys(`${MEMBER_PREFIX}${encodeSegment(roomId)}:`)).length
     const nowEmpty = remaining === 0
     if (nowEmpty) {
       await storage.removeItem(`${CREATED_MARKER_PREFIX}${roomId}`)
@@ -85,7 +86,7 @@ export async function leaveRoom(storage: Storage, roomId: string, connectionId: 
  * rooms.
  */
 export async function getRoomsForConnection(storage: Storage, connectionId: string): Promise<string[]> {
-  const prefix = `${MEMBER_ROOMS_PREFIX}${connectionId}:`
+  const prefix = `${MEMBER_ROOMS_PREFIX}${encodeSegment(connectionId)}:`
   const keys = await storage.getKeys(prefix)
   return keys.map(k => k.slice(prefix.length))
 }
