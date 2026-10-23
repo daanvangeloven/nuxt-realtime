@@ -48,6 +48,8 @@ function readConnectionSecret(connectionId: string): string | undefined {
 
 function storeConnectionSecret(connectionId: string, secret: string): void {
   try {
+    // Per-tab reclaim token, verified server-side. Under XSS the live socket is already usable, so storing it adds no exposure.
+    // codeql[js/clear-text-storage-of-sensitive-data]
     sessionStorage.setItem(CONNECTION_SECRET_STORAGE_KEY, `${connectionId}:${secret}`)
   }
   catch {
