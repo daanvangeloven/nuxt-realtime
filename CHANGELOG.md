@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.1
+
+[compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.2.0...v0.2.1)
+
+### 🔒 Security
+
+- **Origin check:** the realtime server now rejects cross-site WebSocket connections. Without `cors.origin` only same-origin connections are accepted (`X-Forwarded-Host` is honored behind a proxy); with it, only the listed origins. Clients without an `Origin` header (server-side, native) are still accepted. A warning is logged when `socketio.serverUrl` is set without `cors.origin`. **If your frontend and realtime server are on different origins, set `cors.origin`** or provide your own `serverOptions.allowRequest`.
+- **Reconnect identity:** the server issues a per-connection secret and a `connectionId` can only be reclaimed by presenting it, so another client can no longer take over someone else's locks, presence or room membership by guessing or observing their id. Clients that lose their secret reconnect with a fresh identity.
+- **Abuse limits:** new `limits` option (`maxKeyLength`, `maxValueBytes`, `maxKeysPerSocket`, `maxEventsPerSecond`) caps what a single connection can store, subscribe to and emit.
+- **Authorization hooks:** new `nuxt-realtime:canSubscribe` and `nuxt-realtime:canPublish` Nitro hooks to restrict event channels and locks. Both allow by default; a hook that throws denies.
+- Input validation on storage, lock, presence, room and event payloads.
+
+### 🏡 Chore
+
+- Dependency updates for security fixes.
+- Lock Node.js to 24 (`.nvmrc`, `engines`, CI).
+
+### ❤️ Contributors
+
+- Daanvangeloven <daanvangeloven@gmail.com>
+
 ## v0.2.0
 
 [compare changes](https://github.com/daanvangeloven/nuxt-realtime/compare/v0.1.2...v0.2.0)
