@@ -1,4 +1,5 @@
 import type { Storage } from 'unstorage'
+import { encodeSegment } from './keys'
 
 const PRESENCE_PREFIX = '_presence:'
 const CONN_ROOMS_PREFIX = '_connrooms:'
@@ -10,8 +11,8 @@ const CONN_ROOMS_PREFIX = '_connrooms:'
  * lock.ts for the bug this pattern avoids).
  */
 export async function joinPresence(storage: Storage, room: string, connectionId: string, info: unknown = null): Promise<void> {
-  await storage.setItem(`${PRESENCE_PREFIX}${room}:${connectionId}`, info)
-  await storage.setItem(`${CONN_ROOMS_PREFIX}${connectionId}:${room}`, true)
+  await storage.setItem(`${PRESENCE_PREFIX}${encodeSegment(room)}:${connectionId}`, info)
+  await storage.setItem(`${CONN_ROOMS_PREFIX}${encodeSegment(connectionId)}:${room}`, true)
 }
 
 /**
@@ -19,12 +20,12 @@ export async function joinPresence(storage: Storage, room: string, connectionId:
  * can skip broadcasting a leave for a connection that was never a member.
  */
 export async function leavePresence(storage: Storage, room: string, connectionId: string): Promise<boolean> {
-  const key = `${PRESENCE_PREFIX}${room}:${connectionId}`
+  const key = `${PRESENCE_PREFIX}${encodeSegment(room)}:${connectionId}`
   const existed = await storage.hasItem(key)
   if (existed) {
     await storage.removeItem(key)
   }
-  await storage.removeItem(`${CONN_ROOMS_PREFIX}${connectionId}:${room}`)
+  await storage.removeItem(`${CONN_ROOMS_PREFIX}${encodeSegment(connectionId)}:${room}`)
   return existed
 }
 
@@ -32,7 +33,7 @@ export async function leavePresence(storage: Storage, room: string, connectionId
  * Returns the current `{ [connectionId]: info }` snapshot for everyone present in `room`.
  */
 export async function getPresenceSnapshot(storage: Storage, room: string): Promise<Record<string, unknown>> {
-  const prefix = `${PRESENCE_PREFIX}${room}:`
+  const prefix = `${PRESENCE_PREFIX}${encodeSegment(room)}:`
   const keys = await storage.getKeys(prefix)
   const snapshot: Record<string, unknown> = {}
   for (const key of keys) {
@@ -47,7 +48,7 @@ export async function getPresenceSnapshot(storage: Storage, room: string): Promi
  * scanning all rooms.
  */
 export async function getRoomsForConnection(storage: Storage, connectionId: string): Promise<string[]> {
-  const prefix = `${CONN_ROOMS_PREFIX}${connectionId}:`
+  const prefix = `${CONN_ROOMS_PREFIX}${encodeSegment(connectionId)}:`
   const keys = await storage.getKeys(prefix)
   return keys.map(k => k.slice(prefix.length))
 }

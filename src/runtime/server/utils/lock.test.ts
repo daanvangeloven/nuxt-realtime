@@ -205,4 +205,13 @@ describe('lock', () => {
       await expect(getLocksOwnedBy(storage, 'bob')).resolves.toEqual(['doc-1'])
     })
   })
+
+  it('keeps room and owner indexes separate for ids that extend each other with a colon', async () => {
+    await claimLock(storage, 'k1', 'owner', undefined, { room: 'a' })
+    await claimLock(storage, 'k2', 'owner:x', undefined, { room: 'a:b' })
+
+    await expect(getRoomKeys(storage, 'a')).resolves.toEqual(['k1'])
+    await expect(getRoomKeys(storage, 'a:b')).resolves.toEqual(['k2'])
+    await expect(getLocksOwnedBy(storage, 'owner')).resolves.toEqual(['k1'])
+  })
 })

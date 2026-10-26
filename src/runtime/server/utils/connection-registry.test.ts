@@ -121,4 +121,25 @@ describe('ConnectionRegistry', () => {
     await registry.register('conn-2', 'socket-b')
     await expect(registry.listIds()).resolves.toEqual(expect.arrayContaining(['conn-1', 'conn-2']))
   })
+
+  describe('reclaim secret', () => {
+    it('only reclaims a stale record when the issued secret is presented', async () => {
+      await registry.register('conn-1', 'socket-a', null, 'the-secret')
+      await registry.markStale('conn-1', 'socket-a')
+
+      await expect(registry.reclaim('conn-1', 'socket-evil')).resolves.toBe(false)
+      await expect(registry.reclaim('conn-1', 'socket-evil', 'guess')).resolves.toBe(false)
+      await expect(registry.lookup('conn-1')).resolves.toMatchObject({ socketId: 'socket-a', staleAt: expect.any(Number) })
+
+      await expect(registry.reclaim('conn-1', 'socket-b', 'the-secret')).resolves.toBe(true)
+      await expect(registry.lookup('conn-1')).resolves.toMatchObject({ socketId: 'socket-b', staleAt: null })
+    })
+
+    it('still reclaims records that were registered without a secret', async () => {
+      await registry.register('conn-1', 'socket-a')
+      await registry.markStale('conn-1', 'socket-a')
+
+      await expect(registry.reclaim('conn-1', 'socket-b')).resolves.toBe(true)
+    })
+  })
 })

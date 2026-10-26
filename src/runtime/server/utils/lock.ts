@@ -1,4 +1,5 @@
 import type { Storage } from 'unstorage'
+import { encodeSegment } from './keys'
 
 export interface ClaimLockOptions {
   /** Opaque group tag for bulk presence via lock:subscribeRoom. Only touched when explicitly set. */
@@ -26,7 +27,7 @@ function isExpired(record: FallbackLockRecord | null | undefined): boolean {
 async function untagRoom(storage: Storage, key: string): Promise<void> {
   const room = await storage.getItem<string>(`_lockroom:${key}`)
   if (!room) return
-  await storage.removeItem(`_roomkeys:${room}:${key}`)
+  await storage.removeItem(`_roomkeys:${encodeSegment(room)}:${key}`)
   await storage.removeItem(`_lockroom:${key}`)
 }
 
@@ -35,7 +36,7 @@ async function tagRoom(storage: Storage, key: string, room: string): Promise<voi
   if (previousRoom && previousRoom !== room) {
     await untagRoom(storage, key)
   }
-  await storage.setItem(`_roomkeys:${room}:${key}`, true)
+  await storage.setItem(`_roomkeys:${encodeSegment(room)}:${key}`, true)
   await storage.setItem(`_lockroom:${key}`, room)
 }
 
@@ -44,7 +45,7 @@ async function tagRoom(storage: Storage, key: string, room: string): Promise<voi
 async function untagOwner(storage: Storage, key: string): Promise<void> {
   const owner = await storage.getItem<string>(`_lockowner:${key}`)
   if (!owner) return
-  await storage.removeItem(`_ownerlocks:${owner}:${key}`)
+  await storage.removeItem(`_ownerlocks:${encodeSegment(owner)}:${key}`)
   await storage.removeItem(`_lockowner:${key}`)
 }
 
@@ -53,7 +54,7 @@ async function tagOwner(storage: Storage, key: string, owner: string): Promise<v
   if (previousOwner && previousOwner !== owner) {
     await untagOwner(storage, key)
   }
-  await storage.setItem(`_ownerlocks:${owner}:${key}`, true)
+  await storage.setItem(`_ownerlocks:${encodeSegment(owner)}:${key}`, true)
   await storage.setItem(`_lockowner:${key}`, owner)
 }
 
@@ -152,7 +153,7 @@ export async function getLockRoom(storage: Storage, key: string): Promise<string
  * Returns the keys of every lock currently tagged with `room`.
  */
 export async function getRoomKeys(storage: Storage, room: string): Promise<string[]> {
-  const prefix = `_roomkeys:${room}:`
+  const prefix = `_roomkeys:${encodeSegment(room)}:`
   const allKeys = await storage.getKeys(prefix)
   return allKeys.map(k => k.slice(prefix.length))
 }
@@ -163,7 +164,7 @@ export async function getRoomKeys(storage: Storage, room: string): Promise<strin
  * an immediate disconnect when no connectionId was supplied.
  */
 export async function getLocksOwnedBy(storage: Storage, owner: string): Promise<string[]> {
-  const prefix = `_ownerlocks:${owner}:`
+  const prefix = `_ownerlocks:${encodeSegment(owner)}:`
   const keys = await storage.getKeys(prefix)
   return keys.map(k => k.slice(prefix.length))
 }

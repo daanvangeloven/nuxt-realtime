@@ -54,7 +54,7 @@ describe('storage:get/set/subscribe reject every internal prefix and invalid key
   }
   let connectionHandler: ((socket: unknown) => void) | undefined
   let handlers: Record<string, (...args: unknown[]) => unknown>
-  let fakeSocket: { join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
+  let fakeSocket: { emit: ReturnType<typeof vi.fn>, join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
 
   beforeEach(async () => {
     vi.resetModules()
@@ -121,6 +121,7 @@ describe('storage:get/set/subscribe reject every internal prefix and invalid key
       rooms: new Set(['socket-abc']),
       join: vi.fn(),
       leave: vi.fn(),
+      emit: vi.fn(),
       to: vi.fn().mockReturnValue({ emit: vi.fn() }),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         handlers[event] = handler
@@ -173,7 +174,7 @@ describe('storage:get/set/subscribe still work for ordinary, non-underscore-pref
   }
   let connectionHandler: ((socket: unknown) => void) | undefined
   let handlers: Record<string, (...args: unknown[]) => unknown>
-  let fakeSocket: { join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
+  let fakeSocket: { emit: ReturnType<typeof vi.fn>, join: ReturnType<typeof vi.fn>, leave: ReturnType<typeof vi.fn>, to: ReturnType<typeof vi.fn>, on: ReturnType<typeof vi.fn>, rooms: Set<string>, id: string }
 
   // 'user_prefs': underscore mid-string is fine, only a leading '_' is reserved.
   const VALID_KEYS = ['counter', 'user_prefs', 'chat:room:1', 'room:abc:doc']
@@ -243,6 +244,7 @@ describe('storage:get/set/subscribe still work for ordinary, non-underscore-pref
       rooms: new Set(['socket-abc']),
       join: vi.fn(),
       leave: vi.fn(),
+      emit: vi.fn(),
       to: vi.fn().mockReturnValue({ emit: vi.fn() }),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         handlers[event] = handler
@@ -294,6 +296,7 @@ describe('mount isolation: a client cannot forge module state through storage:se
       handlers,
       join: vi.fn((room: string) => rooms.add(room)),
       leave: vi.fn((room: string) => rooms.delete(room)),
+      emit: vi.fn(),
       to: vi.fn(() => ({ emit: vi.fn() })),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         (handlers[event] ??= []).push(handler)
@@ -402,6 +405,7 @@ describe('cleanup job releases idle locks through releaseLock(), not just the le
       handlers,
       join: vi.fn((room: string) => rooms.add(room)),
       leave: vi.fn((room: string) => rooms.delete(room)),
+      emit: vi.fn(),
       to: vi.fn(() => ({ emit: vi.fn() })),
       on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {
         (handlers[event] ??= []).push(handler)

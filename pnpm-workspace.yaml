@@ -12,6 +12,7 @@ onlyBuiltDependencies:
 
 overrides:
   '@nuxt/devtools': '>=3.3.1'
+  '@tiptap/core': '>=3.30.5'
   '@vue/compiler-sfc': ^3.5.41
   brace-expansion@>=1.0.0 <2.0.0: '>=1.1.18 <2.0.0'
   brace-expansion@>=2.0.0 <3.0.0: '>=2.1.4 <3.0.0'
@@ -19,10 +20,16 @@ overrides:
   dompurify: '>=3.4.13'
   esbuild: '>=0.28.1'
   fast-uri: '>=4.1.2'
+  fflate: '>=0.7.5'
   js-yaml@>=4.0.0 <5.0.0: '>=4.3.1 <5.0.0'
+  launch-editor: '>=2.14.2'
   mermaid: '>=11.16.1'
   nanoid: '>=3.3.18'
   sharp: '>=0.35.0'
+  shell-quote: '>=1.11.0'
   socket.io-parser: '>=4.2.7'
+  source-map-js: '>=1.2.2'
   unhead@>=2.0.0 <3.0.0: '>=2.1.13 <3.0.0'
   ws: '>=8.21.0'
+
+minimumReleaseAge: 10080
